@@ -1,0 +1,17 @@
+#!/bin/bash 
+
+# make new directory
+cd $1
+cd mail
+sudo mkdir addleness analects annalistic anthropomorphologically blepharosphincterectomy corector durwaun dysphasia encampment endoscopic exilic forfend gorbellied gushiness muermo neckar outmate outroll overrich philosophicotheological pockwood polypose refluxed reinsure repine scerne starshine unauthoritativeness unminced unrosed untranquil urushinic vegetocarbonaceous wamara whaledom
+
+# set perms
+sudo addgroup -gid 2050 mailout
+for dir in ./*
+do
+  usr=`echo $dir | cut -c 3-`
+  sudo adduser --disabled-password --quiet $usr
+  sudo chown $usr:mailout $dir
+  sudo chmod -R u=rw,g=rw,o= $dir
+done
+cd ..
