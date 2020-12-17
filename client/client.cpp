@@ -183,11 +183,11 @@ int main()
 #else
     auto ctx = my::UniquePtr<SSL_CTX>(SSL_CTX_new(TLS_client_method()));
 #endif
-    if (SSL_CTX_set_default_verify_paths(ctx.get()) != 1) {
+    if (SSL_CTX_load_verify_locations(ctx.get(), "../server/serv_cert.pem", nullptr) != 1) {
         my::print_errors_and_exit("Error setting up trust store");
     }
 
-    auto bio = my::UniquePtr<BIO>(BIO_new_connect("duckduckgo.com:443"));
+    auto bio = my::UniquePtr<BIO>(BIO_new_connect("localhost:8080"));
     if (bio == nullptr) {
         my::print_errors_and_exit("Error in BIO_new_connect");
     }
@@ -197,9 +197,9 @@ int main()
     auto ssl_bio = std::move(bio)
         | my::UniquePtr<BIO>(BIO_new_ssl(ctx.get(), 1))
         ;
-    SSL_set_tlsext_host_name(my::get_ssl(ssl_bio.get()), "duckduckgo.com");
+    SSL_set_tlsext_host_name(my::get_ssl(ssl_bio.get()), "localhost");
 #if OPENSSL_VERSION_NUMBER >= 0x10100000L
-    SSL_set1_host(my::get_ssl(ssl_bio.get()), "duckduckgo.com");
+    SSL_set1_host(my::get_ssl(ssl_bio.get()), "localhost");
 #endif
     if (BIO_do_handshake(ssl_bio.get()) <= 0) {
         my::print_errors_and_exit("Error in BIO_do_handshake");
