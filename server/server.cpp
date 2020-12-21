@@ -160,6 +160,12 @@ int main()
     if (SSL_CTX_use_PrivateKey_file(ctx.get(), "private/priv_key.pem", SSL_FILETYPE_PEM) <= 0) {
         my::print_errors_and_exit("Error loading server private key");
     }
+    if (!SSL_CTX_load_verify_locations(ctx.get(),"../ca/ca.cert.pem",NULL)) {
+                	ERR_print_errors_fp(stderr);
+                	exit(1);
+    }
+    SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER, NULL); //Set to require client certificate verification 
+    SSL_CTX_set_verify_depth(ctx.get(),1);  
 
     auto accept_bio = my::UniquePtr<BIO>(BIO_new_accept("8080"));
     if (BIO_do_accept(accept_bio.get()) <= 0) {
