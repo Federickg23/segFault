@@ -12,13 +12,12 @@
 
 int encrypt(char **argv, int argc)
 {
-    if (argc < 3) {
-        std::cerr << "Missing args: requires sender, receiver, and file.";
+    if (argc < 2) {
+        std::cerr << "Missing args: requires receiver and file.";
         return 1;
     }
-    std::string file(argv[2]);
-    std::string sender(argv[0]);
-    std::string receiver(argv[1]);
+    std::string file(argv[1]);
+    std::string receiver(argv[0]);
 
     std::ifstream input_file(file, std::ios::in | std::ios::binary);
     if (!input_file.is_open())
@@ -39,10 +38,23 @@ int encrypt(char **argv, int argc)
     }
 
 
-    // TODO: fetch hashed password from file
+    // fetch hashed password from file
     BYTE HMAC_key[SHA256_BLOCK_SIZE];
     BYTE encryption_key[SHA256_BLOCK_SIZE];
-    char *password;
+    std::string pass;
+    std::ifstream passwd_file;
+    char mb_name[40];
+    strcpy(mb_name, receiver.c_str());
+    strcat(mb_name, ".txt");
+    passwd_file.open(mb_name);
+    if (!passwd_file)
+    {
+        std::cerr << "Error: could not open password file.";
+        return 1;
+    }
+    getline(passwd_file, pass);
+    passwd_file.close();
+    const char *password = pass.c_str();
     iterate_sha256(password, encryption_key, ENCRYPT_SHA256_ITERS);
 
     // I/O: Open old mailbox
