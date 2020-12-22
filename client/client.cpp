@@ -185,7 +185,7 @@ int main()
 #endif
     /*----- Load a client certificate into the SSL_CTX structure -----*/
     //must generate certs and keys for each client, for the meantime use the "" ones
-       if(SSL_CTX_use_certificate_file(ctx.get(), "client.cert.pem", SSL_FILETYPE_PEM) <= 0){
+       if(SSL_CTX_use_certificate_file(ctx.get(), "certificates/client.cert.pem", SSL_FILETYPE_PEM) <= 0){
               	ERR_print_errors_fp(stderr);
               	exit(1);
        	}
