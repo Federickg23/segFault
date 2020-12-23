@@ -4,21 +4,19 @@
 #include "cstore_utils.h"
 #include <vector>
 #include <iostream>
-#include <fstream>
 #include <unistd.h>
+#include <fstream>
+#include <set>
 #include "crypto_lib/sha256.c"
+
 
 typedef unsigned char BYTE;
 
-int extract(char **argv, int argc)
+int remove(char **argv, int argc)
 {
-    if(argc < 2)
-    {
-        printf("Missing required args.\n");
-    }
 
     std::string file(argv[1]);
-    std::string archivename(argv[0]) ;
+    std::string archivename(argv[0]);
 
     // Hash password to get key
     BYTE HMAC_key[SHA256_BLOCK_SIZE];
@@ -62,9 +60,16 @@ int extract(char **argv, int argc)
         return 1;
     }
 
-    // Loop over files requeseted to be extracted
+    // MAIN LOOP
+    std::ofstream new_archive_file(archivename, std::ios::out | std::ios::binary | std::ios::trunc);
+    if(!new_archive_file.is_open())
+    {
+        std::cerr << "Could not open new archive file to write undeleted contents to.\n";
+        return 1;
+    }
+
     std::vector<BYTE> content;
-    bool file_found = false;
+    bool deleted_file = false;
     bool namesize_mode = true;
     bool name_mode = false;
     bool contentsize_mode = false;
@@ -108,13 +113,10 @@ int extract(char **argv, int argc)
                 name_bytes.push_back(ch);
                 std::string name(name_bytes.begin(),name_bytes.end());
 
-                // We found the current to-be-extracted file
-                if(name == file)
+                if(file == name)
                 {
-                    content.clear(); // Overwrite content if we found the file later
-                    file_found = true;
+                    deleted_file = true;
                 }
-                    
                 name_ctr = 0;
                 name_mode = false;
                 contentsize_mode = true;
@@ -138,72 +140,89 @@ int extract(char **argv, int argc)
         }
         else // content mode
         {
-            std::string name(name_bytes.begin(),name_bytes.end());
-            // Skip over the contents of the file
             if (content_ctr < contentsize - 1)
             {
-                if(file_found && name == file)
-                {
-                    content.push_back(ch);
-                }
+                content.push_back(ch);
                 content_ctr++;
             }
             else
             {
-                if(file_found && name == file)
+                content.push_back(ch);
+
+                // Write to new file if undeleted (still encrypted, so no need to reencrypt)
+                if(!deleted_file)
                 {
-                    content.push_back(ch);
+                    // Get filename as cstring
+                    std::string name(name_bytes.begin(),name_bytes.end());
+                    char * cstr = new char [name.length()+1];
+                    std::strcpy (cstr, name.c_str());
+
+                    // Put vector into a char*
+                    char content_bytes[content.size()];
+                    for(int i = 0; i < content.size(); i++)
+                    {
+                        content_bytes[i] = content[i];
+                    }
+
+                    // Write to new file (append operation)
+                    new_archive_file.write(reinterpret_cast<const char*>(&namesize), sizeof namesize);
+                    new_archive_file.write(cstr, strlen(cstr));
+                    new_archive_file.write(reinterpret_cast<const char*>(&contentsize), sizeof contentsize);
+                    new_archive_file.write(content_bytes, contentsize);
                 }
-                content_ctr = 0;
+                else
+                {
+                    std::string name(name_bytes.begin(), name_bytes.end());
+                    std::cout << name << " deleted from " << archivename << ".\n";
+                }
+
                 name_bytes.clear();
+                content.clear();
+                content_ctr = 0;
+                deleted_file = false;
                 content_mode = false;
                 namesize_mode = true;
             }
         }
     }
 
-    if(file_found)
-    {
-        // Decrypt file and write to current directory
-        std::string test_filename = file;
-        std::ofstream extracted_file(test_filename, std::ios::out | std::ios::binary | std::ios::trunc);
-        if(!extracted_file.is_open())
-        {
-            std::cerr << "Could not complete final write to extracted file " << file << std::endl; 
-        }
+    new_archive_file.close();
 
-        // Convert BYTE content vector to BYTE*
-        BYTE content_bytes[content.size()];
-        for(int i = 0; i < content.size(); i++)
-        {
-            content_bytes[i] = content[i];
-        }
-        std::vector<BYTE> plaintext;
-        int decrypt_success = decrypt_cbc(content_bytes, plaintext, encryption_key, 256, content.size());
-        if(decrypt_success != 0)
-        {
-            std::cerr << "Decryption failed for " << file << std::endl;
-            return 1;
-        }
-
-        char plaintext_bytes[plaintext.size()];
-        for(int i = 0; i < plaintext.size(); i++)
-        {
-            plaintext_bytes[i] = plaintext[i];
-        }
-
-        extracted_file.write(plaintext_bytes, plaintext.size());
-        std::cout << file << " (" << plaintext.size() << " bytes) successfully extracted.\n";
-        extracted_file.close();
-    }
-    else
-    {
-        std::cout << file << " not found in archive.\n";
-    }
-      
-    content.clear();
-    contentsize = 0;
-    file_found = false;
+    // new_archive_file now contains all the file contents, but no MAC
     
+    // I/O: Encrypted archive file (we just updated)
+    std::vector<BYTE> encrypted_file_content;
+    BYTE encrypted_file_mac[SHA256_BLOCK_SIZE];
+
+    // New archives don't have MAC code yet
+    read_mac_archive(archivename, encrypted_file_mac, encrypted_file_content, 0);
+
+    // Put the contents into a BYTE array
+    BYTE encrypted_file_content_bytes[encrypted_file_content.size()];
+    for(int i = 0; i < encrypted_file_content.size(); i++)
+    {
+        encrypted_file_content_bytes[i] = encrypted_file_content[i];
+    }
+        
+    // I/O: Final archive file
+    std::ofstream final_archive_file(archivename, std::ios::out | std::ios::binary | std::ios::trunc);
+    if(!final_archive_file.is_open())
+    {
+        std::cerr << "Could not complete final write to archive file " << archivename << std::endl; 
+    }
+
+    // HMAC on the entire encrypted archive
+    BYTE hmac_tag[SHA256_BLOCK_SIZE];
+    hmac(encrypted_file_content_bytes, HMAC_key, hmac_tag, encrypted_file_content.size(), SHA256_BLOCK_SIZE);
+    char hmac_tag_char[SHA256_BLOCK_SIZE];
+    memcpy(hmac_tag_char, hmac_tag, SHA256_BLOCK_SIZE);
+
+    // Place tag at beginning of file and write the rest
+    final_archive_file.write(hmac_tag_char, SHA256_BLOCK_SIZE);
+    char encrypted_file_content_char[encrypted_file_content.size()];
+    memcpy(encrypted_file_content_char, encrypted_file_content_bytes, encrypted_file_content.size());
+    final_archive_file.write(encrypted_file_content_char, encrypted_file_content.size());
+    final_archive_file.close();
+
     return 0;
 }
