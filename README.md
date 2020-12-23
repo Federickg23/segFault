@@ -19,3 +19,19 @@ if method == getcert:
 
 On the client side, it should somehow send the http request formatted properly, indicating the method, password, and user.
 Then when it recieves the certificate (if response isn't an error) as a string, it just stores that into a file (cert.pem) 
+
+For `changepw` the idea is very similar:
+
+```
+method = read_https_request()
+if method == changepw:
+  user, password = read_https_request()
+  import login
+  if login.verify(user, password) == 0:
+    send_https_response( "INVALID LOGIN" )
+  else:
+    new_pass = read_https_request()
+    cert = generate_certificate(user + new_pass)
+    send_https_response(cert)
+    ### code to save cert on server - OVERWRITE previous one###
+```
