@@ -197,7 +197,7 @@ int main()
         	}
  
     /* Load trusted CA. */
-        	if (!SSL_CTX_load_verify_locations(ctx.get(),"../ca/ca.cert.pem",NULL)) {
+        	if (!SSL_CTX_load_verify_locations(ctx.get(),"../certs/ca/certs/ca.cert.pem",NULL)) {
                 	ERR_print_errors_fp(stderr);
                 	exit(1);
         	}

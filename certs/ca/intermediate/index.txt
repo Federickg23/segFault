@@ -1,0 +1,2 @@
+V	301221025546Z		1000	unknown	/C=US/ST=New York/O=COMS4181 Hw2/CN=Intermediate Cert 2
+V	301221025547Z		1001	unknown	/C=US/ST=New York/O=COMS4181 Hw2/CN=Intermediate Cert 4
