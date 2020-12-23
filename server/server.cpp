@@ -12,6 +12,12 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
+#include "list.h"
+#include "encrypt.h"
+#include "extract.h"
+#include "remove.h"
+#include "cstore_utils.h"
+
 namespace my {
 
 template<class T> struct DeleterOf;

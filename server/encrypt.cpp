@@ -1,7 +1,5 @@
-#include "cstore_add.h"
+#include "encrypt.h"
 #include "cstore_utils.h"
-#include "crypto_lib/sha256.h"
-#include "crypto_lib/aes.h"
 #include <vector>
 #include <iostream>
 #include <fstream>
@@ -9,6 +7,9 @@
 #include <unistd.h>
 #include <string>
 #include <cstring>
+#include "crypto_lib/aes.c"
+#include "crypto_lib/sha256.c"
+
 
 int encrypt(char **argv, int argc)
 {

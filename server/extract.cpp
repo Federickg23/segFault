@@ -1,12 +1,12 @@
 #include <string>
 #include <cstring>
-#include "cstore_add.h"
+#include "encrypt.h"
 #include "cstore_utils.h"
-#include "crypto_lib/sha256.h"
 #include <vector>
 #include <iostream>
 #include <fstream>
 #include <unistd.h>
+#include "crypto_lib/sha256.c"
 
 typedef unsigned char BYTE;
 

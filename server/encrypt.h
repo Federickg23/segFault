@@ -2,6 +2,6 @@
 #define CSTORE_ADD
 #include "cstore_utils.h"
 
-int cstore_add(UserArgs parsed_args);
+int encrypt(char **argv, int argc);
 
 #endif

@@ -61,7 +61,7 @@ X509_REQ *generate_cert_req(EVP_PKEY *p_key) {
     return p_x509_req;
 }
 
-int main() {
+int mkcert() {
 
   ASN1_INTEGER                 *aserial = NULL;
   EVP_PKEY                     *ca_privkey, *req_pubkey;
