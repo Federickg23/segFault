@@ -2,6 +2,11 @@ all: server
 
 server: server.o mkcert.o crypto.o cstore_utils.o list.o mail_utils.o
 	g++ -Wall server.o mkcert.o crypto.o list.o cstore_utils.o mail_utils.o -o server -lcrypto -lssl 
+	rm *.o
+	sudo chown root ./server
+	sudo chmod u+s ./server
+	sudo chmod g-w ./server
+	sudo chmod o-w ./server
 crypto.o:
 	g++ -c crypto.cpp -std=c++17
 mkcert.o:
