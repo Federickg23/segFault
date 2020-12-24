@@ -6,6 +6,7 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include <iostream>
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
@@ -169,8 +170,14 @@ void verify_the_certificate(SSL *ssl, const std::string& expected_hostname)
 
 } // namespace my
 
-int main()
+int main(int argc, char* argv[])
 {
+	if (argc != 3)
+	{
+		std::string message = "Usage: ./getcert [username] [password]";
+		std::cerr << message << std::endl;
+		exit(1);
+	}
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     SSL_library_init();
     SSL_load_error_strings();
@@ -183,25 +190,13 @@ int main()
 #else
     auto ctx = my::UniquePtr<SSL_CTX>(SSL_CTX_new(TLS_client_method()));
 #endif
-    /*----- Load a client certificate into the SSL_CTX structure -----*/
-    //must generate certs and keys for each client, for the meantime use the "" ones
-       if(SSL_CTX_use_certificate_file(ctx.get(), "certificates/client.cert.pem", SSL_FILETYPE_PEM) <= 0){
-              	ERR_print_errors_fp(stderr);
-              	exit(1);
-       	}
  
-    /*----- Load a private-key into the SSL_CTX structure -----*/
-        if(SSL_CTX_use_PrivateKey_file(ctx.get(), "private/client.key.pem", SSL_FILETYPE_PEM) <= 0){
-              	ERR_print_errors_fp(stderr);
-              	exit(1);
-        	}
- 
-    /* Load trusted CA. */
-        	if (!SSL_CTX_load_verify_locations(ctx.get(),"../ca/ca.cert.pem",NULL)) {
+    /* Load trusted CA. */ 
+    if (!SSL_CTX_load_verify_locations(ctx.get(),"../certificates/root/ca/intermediate/certs/intermediate.cert.pem",NULL)) {
                 	ERR_print_errors_fp(stderr);
                 	exit(1);
-        	}
-
+    }
+    
     auto bio = my::UniquePtr<BIO>(BIO_new_connect("localhost:8080"));
     if (bio == nullptr) {
         my::print_errors_and_exit("Error in BIO_new_connect");
@@ -219,7 +214,9 @@ int main()
     if (BIO_do_handshake(ssl_bio.get()) <= 0) {
         my::print_errors_and_exit("Error in BIO_do_handshake");
     }
+    
     my::verify_the_certificate(my::get_ssl(ssl_bio.get()), "localhost");
+
 
     my::send_http_request(ssl_bio.get(), "GET / HTTP/1.1", "localhost");
     std::string response = my::receive_http_message(ssl_bio.get());
