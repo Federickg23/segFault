@@ -7,16 +7,19 @@
 #include <string>
 #include <unistd.h>
 #include <vector>
-
+#include <iostream>
+#include <algorithm>
+#include <cstring>
+#include <sys/wait.h>
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
-
 #include "list.h"
 #include "encrypt.h"
 #include "extract.h"
 #include "remove.h"
 #include "cstore_utils.h"
+#include "mail_utils.h"
 
 namespace my {
 
@@ -149,6 +152,225 @@ my::UniquePtr<BIO> accept_new_tcp_connection(BIO *accept_bio)
 
 } // namespace my
 
+
+void receiveMessage(std::string request){
+
+}
+
+
+int parseRequest(std::string request){
+    if(strcmp(request.substr(0,3).c_str(), "GET") != 0){
+        return -1;
+    }
+    std::vector<FullMessage> fullMessages;
+
+
+    std::string delimiter = "\n";
+    size_t pos = 0;
+    std::string token;
+    int counter = 0;
+    bool mailFromMode = true;
+    bool rcptToMode = false;
+    bool dataMode = false;
+    bool skipMode = false;
+    std::string mailFromUsername;
+    std::vector<std::string> rcptToUsernames;
+    std::vector<std::string> messageLines;
+    int bytesRead = 0;
+
+    while ((pos = request.find(delimiter)) != std::string::npos) {
+        token = request.substr(0, pos);
+        std::cout << token << std::endl;
+        if(counter == 2 && token.find("send") != std::string::npos ){
+            std::cout << "Client is sending a message" << std::endl;
+        }
+        else if (counter == 2 && token.find("receive") != std::string::npos){
+            std::cout << "Client is receiving a message" << std::endl;
+            receiveMessage(request);
+            break;
+        }
+        else if (counter == 2){
+            return -1;
+        }
+        if (token.empty())
+            {
+                bytesRead += 1;
+                if (bytesRead > MAX_MSG_SIZE)
+                {
+                    std::cerr << "Maximum message size exceeded. Aborting mail-in parsing.\n";
+                    return 1;
+                }
+            }
+            else
+            {
+                bytesRead += token.size();
+                if (bytesRead > MAX_MSG_SIZE)
+                {
+                    std::cerr << "Maximum message size exceeded. Aborting mail-in parsing.\n";
+                    return 1;
+                }
+            }
+            // SKIP MODE -- get to end of line '.'
+            if (skipMode)
+            {
+                if (token.empty())
+                {
+                    continue;
+                }
+                if (token == ".")
+                {
+                    // Flush out the variables, ready for new message
+                    mailFromUsername.clear();
+                    rcptToUsernames.clear();
+                    messageLines.clear();
+
+                    skipMode = false;
+                    mailFromMode = true;
+                    rcptToMode = false;
+                    dataMode = false;
+                }
+            }
+            // MODE 1: MAIL FROM:<username>
+            else if(mailFromMode && !rcptToMode && !dataMode && !skipMode)
+            {
+                // Reject newlines out of place
+                if (token.empty())
+                {
+                    std::cerr << "Empty line found in control lines. Skipping to end-of-message.\n";
+                    skipMode = true;
+                    continue; 
+                }
+
+                // Check correct MAIL FROM format
+                if (!checkMailFrom(token))
+                {
+                    std::cerr << "MAIL FROM control line invalid formatting. Skipping to end-of-message.\n";
+                    skipMode = true;
+                    continue;
+                }
+
+                // Extract username from brackets
+                std::string testUsername = extractUsername(token); 
+                if ( !validMailboxChars(testUsername) )
+                {
+                    std::cerr << "Invalid MAIL FROM username. Skipping to end-of-message.\n";
+                    skipMode = true;
+                    continue;
+                }
+
+                if( !doesMailboxExist(testUsername) )
+                {
+                    std::cerr << "Invalid MAIL FROM username. Skipping to end-of-message.\n";
+                    skipMode = true;
+                    continue;
+                }
+                else
+                {
+                    mailFromUsername = testUsername;
+                }
+
+                // Change modes
+                mailFromMode = false;
+                rcptToMode = true;
+                dataMode = false;
+            }
+            // MODE 2: RCPT TO:<username>
+            else if(rcptToMode && !mailFromMode && !dataMode && !skipMode)
+            {
+                // Reject newlines out of place
+                if (token.empty())
+                {
+                    std::cerr << "Empty line found in control lines. Skipping to end-of-message.\n";
+                    skipMode = true;
+                    continue;
+                }
+
+                // Check if this line is the DATA delimiter (if so, continue)
+                if(checkDataDelimiter(token))
+                {
+                    // Invalid if there are no valid rcptTo usernames (valid if at least one)
+                    if ( rcptToUsernames.empty() )
+                    {
+                        std::cerr << "No valid RCPT TO lines. Skipping to end-of-message.\n";
+                        skipMode = true;
+                        continue;
+                    }
+
+                    // Switch mode
+                    mailFromMode = false;
+                    rcptToMode = false;
+                    dataMode = true;
+                    continue;
+                }
+
+                // Check correct RCPT TO format
+                if (!checkRcptTo(token))
+                {
+                    std::cerr << "RCPT TO control line invalid formatting. Skipping to end-of-message.\n";
+                    skipMode = true;
+                    continue;
+                }
+
+                // Extract username from brackets
+                std::string testUsername = extractUsername(token);
+                if( !validMailboxChars(testUsername) )
+                {
+                    std::cerr << "Invalid RCPT TO username. Violates formatting." << std::endl;
+                }
+                else
+                {
+                    rcptToUsernames.push_back(testUsername);
+                }
+            }
+            // MODE 3: DATA
+            else if(dataMode && !mailFromMode && !rcptToMode && !skipMode)
+            {
+                // Empty lines just get added as newlines
+                if (token.empty())
+                {
+                    messageLines.push_back("\n");
+                    continue;
+                }
+
+                // End of message check
+                if (token == ".")
+                {
+                    FullMessage newMessage;
+                    newMessage.mailFrom = mailFromUsername;
+                    std::sort( rcptToUsernames.begin(), rcptToUsernames.end() );
+                    rcptToUsernames.erase( std::unique( rcptToUsernames.begin(), rcptToUsernames.end() ), rcptToUsernames.end() );
+                    newMessage.rcptTo = rcptToUsernames;
+                    newMessage.data = messageLines;
+                    fullMessages.push_back(newMessage);
+
+                    // Flush out the variables, ready for new message
+                    mailFromUsername.clear();
+                    rcptToUsernames.clear();
+                    messageLines.clear();
+
+                    // Switch back to mailFrom mode
+                    mailFromMode = true;
+                    rcptToMode = false;
+                    dataMode = false;
+                }
+                // Actual content
+                else
+                {
+                    if (token[0] == '.')
+                    {
+                        token = token.substr(1);
+                    }
+                    
+                    messageLines.push_back(token);
+                }
+            }
+
+        request.erase(0, pos + delimiter.length());
+
+    }
+    return 0;
+}
+
 int main()
 {
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
@@ -191,7 +413,8 @@ int main()
             std::string request = my::receive_http_message(bio.get());
             printf("Got request:\n");
             printf("%s\n", request.c_str());
-            
+            parseRequest(request.c_str()); 
+
             my::send_http_response(bio.get(), "okay cool\n");
         } catch (const std::exception& ex) {
             printf("Worker exited with exception:\n%s\n", ex.what());
