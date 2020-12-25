@@ -123,11 +123,14 @@ std::string receive_http_message(BIO *bio)
     return headers + "\r\n" + body;
 }
 
-void send_http_request(BIO *bio, const std::string& line, const std::string& host)
+void send_http_request(BIO *bio, const std::string& line, std::string& message, const std::string& host)
 {
     std::string request = line + "\r\n";
     request += "Host: " + host + "\r\n";
+    request += "Method: getcert\r\n";
     request += "\r\n";
+    request += message;
+    request += "\r\n\r\n";
 
     BIO_write(bio, request.data(), request.size());
     BIO_flush(bio);
@@ -192,11 +195,14 @@ int main(int argc, char* argv[])
 #endif
  
     /* Load trusted CA. */ 
-    if (!SSL_CTX_load_verify_locations(ctx.get(),"../certificates/root/ca/intermediate/certs/intermediate.cert.pem",NULL)) {
+    if (!SSL_CTX_load_verify_locations(ctx.get(),"../certificates/root/ca/intermediate/certs/ca-chain.cert.pem",NULL)) {
                 	ERR_print_errors_fp(stderr);
                 	exit(1);
     }
-    
+
+    SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER, NULL); //Set to require server certificate verification 
+    SSL_CTX_set_verify_depth(ctx.get(),1);  
+
     auto bio = my::UniquePtr<BIO>(BIO_new_connect("localhost:8080"));
     if (bio == nullptr) {
         my::print_errors_and_exit("Error in BIO_new_connect");
@@ -216,9 +222,14 @@ int main(int argc, char* argv[])
     }
     
     my::verify_the_certificate(my::get_ssl(ssl_bio.get()), "localhost");
+   
+    std::string message = "Username: ";
+    message += argv[1];
+    message += "\r\n";
+    message += "Password: ";
+    message += argv[2];
 
-
-    my::send_http_request(ssl_bio.get(), "GET / HTTP/1.1", "localhost");
+    my::send_http_request(ssl_bio.get(), "GET / HTTP/1.1", message, "localhost");
     std::string response = my::receive_http_message(ssl_bio.get());
     printf("%s", response.c_str());
 }

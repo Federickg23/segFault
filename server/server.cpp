@@ -7,19 +7,13 @@
 #include <string>
 #include <unistd.h>
 #include <vector>
+#include <fstream>
+#include <crypt.h>
 #include <iostream>
-#include <algorithm>
-#include <cstring>
-#include <sys/wait.h>
+
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
-#include "list.h"
-#include "encrypt.h"
-#include "extract.h"
-#include "remove.h"
-#include "cstore_utils.h"
-#include "mail_utils.h"
 
 namespace my {
 
@@ -131,15 +125,124 @@ std::string receive_http_message(BIO *bio)
     return headers + "\r\n" + body;
 }
 
-void send_http_response(BIO *bio, const std::string& body)
+std::string get_method(const std::string& message)
 {
-    std::string response = "HTTP/1.1 200 OK\r\n";
-    response += "Content-Length: " + std::to_string(body.size()) + "\r\n";
-    response += "\r\n";
+	// Method is stored after content-length line, via 'Method:'
+	const char* method_line = strcasestr(&message[0], "Method: "); 
+	if (method_line == nullptr) {
+		return "";
+	}
+	// Only methods are: getcert, changepw, sendmsg, recvmsg
+	// Note, 3 of them are length 7, and changepw is length 8
+	
+	std::string method = std::string(method_line).substr(8, 8); 
+	return method;
+}
 
-    BIO_write(bio, response.data(), response.size());
+std::string get_pass(const std::string& message)
+{
+
+	const char* break_line = strcasestr(&message[0], "\r\n\r\n");
+        const char* body = break_line + 4;
+	const char* pass_line = strcasestr(body, "Password:");
+
+	if (pass_line == nullptr) {
+		return "";
+	}
+
+	std::string p_s = std::string(pass_line);	
+	std::string password = p_s.substr(10, p_s.find("\r\n")-10); 
+	return password;
+
+}
+
+std::string get_user(const std::string& message)
+{
+
+	const char* break_line = strcasestr(&message[0], "\r\n\r\n");
+        const char* body = break_line + 4;
+	const char* user_line = strcasestr(body, "Username:");
+
+	if (user_line == nullptr) {
+		return "";
+	}
+
+	std::string u_s = std::string(user_line);	
+	std::string username = u_s.substr(10, u_s.find("\r\n")-10); 
+	return username;
+
+}
+
+std::string login(std::string username, std::string password)
+{
+	// Check if username exists
+	std::fstream file;
+	std::string filename = "hashed_passwords/" + username + ".txt";
+   	
+	file.open(filename, std::ios::in);  
+   	if(!file.is_open()) //checking whether the file is open
+   	{
+		return "Username not found";
+      	}
+	
+	std::string hashed_password;
+      	getline(file, hashed_password);  // Should only be one line
+        file.close();
+
+	char* c = crypt(password.c_str(), hashed_password.c_str());
+	
+	if (strcmp(c, hashed_password.c_str()) != 0) 
+	{
+		return "Incorrect Password";
+	}
+
+	return "Login Success";
+}
+void send_http_response(BIO *bio, const std::string& message)
+{
+    std::string method = get_method(message);
+    std::string body = "";
+    std::string header = "";
+
+    printf("%s", method.c_str());
+    if (method == "") {
+	    body += "Method option not found\r\n";
+
+	    header += "HTTP/1.1 400 Bad Request\r\n";
+	    header += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+	    header += "\r\n";
+    }
+
+    if (method.substr(0,7) == "getcert"){
+
+	std::string user = get_user(message);
+	std::string pass = get_pass(message);
+	std::string login_result = login(user, pass);
+    	
+	if(login_result != "Login Success")
+	{
+	    body += login_result + "\r\n\r\n";
+
+	    header += "HTTP/1.1 401 Unauthorized\r\n";
+	    header += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+	    header += "\r\n";
+	}
+	
+	else
+	{
+		body += "okay cool\r\n";
+    		body += get_pass(message) + "\r\n";
+		body += get_user(message) + "\r\n";
+		header += "HTTP/1.1 200 OK\r\n";
+    		header += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+    		header += "\r\n";
+	}
+    }
+
+    BIO_write(bio, header.data(), header.size());
     BIO_write(bio, body.data(), body.size());
     BIO_flush(bio);
+  
 }
 
 my::UniquePtr<BIO> accept_new_tcp_connection(BIO *accept_bio)
@@ -152,225 +255,6 @@ my::UniquePtr<BIO> accept_new_tcp_connection(BIO *accept_bio)
 
 } // namespace my
 
-
-void receiveMessage(std::string request){
-
-}
-
-
-int parseRequest(std::string request){
-    if(strcmp(request.substr(0,3).c_str(), "GET") != 0){
-        return -1;
-    }
-    std::vector<FullMessage> fullMessages;
-
-
-    std::string delimiter = "\n";
-    size_t pos = 0;
-    std::string token;
-    int counter = 0;
-    bool mailFromMode = true;
-    bool rcptToMode = false;
-    bool dataMode = false;
-    bool skipMode = false;
-    std::string mailFromUsername;
-    std::vector<std::string> rcptToUsernames;
-    std::vector<std::string> messageLines;
-    int bytesRead = 0;
-
-    while ((pos = request.find(delimiter)) != std::string::npos) {
-        token = request.substr(0, pos);
-        std::cout << token << std::endl;
-        if(counter == 2 && token.find("send") != std::string::npos ){
-            std::cout << "Client is sending a message" << std::endl;
-        }
-        else if (counter == 2 && token.find("receive") != std::string::npos){
-            std::cout << "Client is receiving a message" << std::endl;
-            receiveMessage(request);
-            break;
-        }
-        else if (counter == 2){
-            return -1;
-        }
-        if (token.empty())
-            {
-                bytesRead += 1;
-                if (bytesRead > MAX_MSG_SIZE)
-                {
-                    std::cerr << "Maximum message size exceeded. Aborting mail-in parsing.\n";
-                    return 1;
-                }
-            }
-            else
-            {
-                bytesRead += token.size();
-                if (bytesRead > MAX_MSG_SIZE)
-                {
-                    std::cerr << "Maximum message size exceeded. Aborting mail-in parsing.\n";
-                    return 1;
-                }
-            }
-            // SKIP MODE -- get to end of line '.'
-            if (skipMode)
-            {
-                if (token.empty())
-                {
-                    continue;
-                }
-                if (token == ".")
-                {
-                    // Flush out the variables, ready for new message
-                    mailFromUsername.clear();
-                    rcptToUsernames.clear();
-                    messageLines.clear();
-
-                    skipMode = false;
-                    mailFromMode = true;
-                    rcptToMode = false;
-                    dataMode = false;
-                }
-            }
-            // MODE 1: MAIL FROM:<username>
-            else if(mailFromMode && !rcptToMode && !dataMode && !skipMode)
-            {
-                // Reject newlines out of place
-                if (token.empty())
-                {
-                    std::cerr << "Empty line found in control lines. Skipping to end-of-message.\n";
-                    skipMode = true;
-                    continue; 
-                }
-
-                // Check correct MAIL FROM format
-                if (!checkMailFrom(token))
-                {
-                    std::cerr << "MAIL FROM control line invalid formatting. Skipping to end-of-message.\n";
-                    skipMode = true;
-                    continue;
-                }
-
-                // Extract username from brackets
-                std::string testUsername = extractUsername(token); 
-                if ( !validMailboxChars(testUsername) )
-                {
-                    std::cerr << "Invalid MAIL FROM username. Skipping to end-of-message.\n";
-                    skipMode = true;
-                    continue;
-                }
-
-                if( !doesMailboxExist(testUsername) )
-                {
-                    std::cerr << "Invalid MAIL FROM username. Skipping to end-of-message.\n";
-                    skipMode = true;
-                    continue;
-                }
-                else
-                {
-                    mailFromUsername = testUsername;
-                }
-
-                // Change modes
-                mailFromMode = false;
-                rcptToMode = true;
-                dataMode = false;
-            }
-            // MODE 2: RCPT TO:<username>
-            else if(rcptToMode && !mailFromMode && !dataMode && !skipMode)
-            {
-                // Reject newlines out of place
-                if (token.empty())
-                {
-                    std::cerr << "Empty line found in control lines. Skipping to end-of-message.\n";
-                    skipMode = true;
-                    continue;
-                }
-
-                // Check if this line is the DATA delimiter (if so, continue)
-                if(checkDataDelimiter(token))
-                {
-                    // Invalid if there are no valid rcptTo usernames (valid if at least one)
-                    if ( rcptToUsernames.empty() )
-                    {
-                        std::cerr << "No valid RCPT TO lines. Skipping to end-of-message.\n";
-                        skipMode = true;
-                        continue;
-                    }
-
-                    // Switch mode
-                    mailFromMode = false;
-                    rcptToMode = false;
-                    dataMode = true;
-                    continue;
-                }
-
-                // Check correct RCPT TO format
-                if (!checkRcptTo(token))
-                {
-                    std::cerr << "RCPT TO control line invalid formatting. Skipping to end-of-message.\n";
-                    skipMode = true;
-                    continue;
-                }
-
-                // Extract username from brackets
-                std::string testUsername = extractUsername(token);
-                if( !validMailboxChars(testUsername) )
-                {
-                    std::cerr << "Invalid RCPT TO username. Violates formatting." << std::endl;
-                }
-                else
-                {
-                    rcptToUsernames.push_back(testUsername);
-                }
-            }
-            // MODE 3: DATA
-            else if(dataMode && !mailFromMode && !rcptToMode && !skipMode)
-            {
-                // Empty lines just get added as newlines
-                if (token.empty())
-                {
-                    messageLines.push_back("\n");
-                    continue;
-                }
-
-                // End of message check
-                if (token == ".")
-                {
-                    FullMessage newMessage;
-                    newMessage.mailFrom = mailFromUsername;
-                    std::sort( rcptToUsernames.begin(), rcptToUsernames.end() );
-                    rcptToUsernames.erase( std::unique( rcptToUsernames.begin(), rcptToUsernames.end() ), rcptToUsernames.end() );
-                    newMessage.rcptTo = rcptToUsernames;
-                    newMessage.data = messageLines;
-                    fullMessages.push_back(newMessage);
-
-                    // Flush out the variables, ready for new message
-                    mailFromUsername.clear();
-                    rcptToUsernames.clear();
-                    messageLines.clear();
-
-                    // Switch back to mailFrom mode
-                    mailFromMode = true;
-                    rcptToMode = false;
-                    dataMode = false;
-                }
-                // Actual content
-                else
-                {
-                    if (token[0] == '.')
-                    {
-                        token = token.substr(1);
-                    }
-                    
-                    messageLines.push_back(token);
-                }
-            }
-
-        request.erase(0, pos + delimiter.length());
-
-    }
-    return 0;
-}
-
 int main()
 {
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
@@ -382,19 +266,22 @@ int main()
     SSL_CTX_set_min_proto_version(ctx.get(), TLS1_2_VERSION);
 #endif
 
-    if (SSL_CTX_use_certificate_file(ctx.get(), "serv_cert.pem", SSL_FILETYPE_PEM) <= 0) {
+    if (SSL_CTX_use_certificate_file(ctx.get(), "certs/localhost.cert.pem", SSL_FILETYPE_PEM) <= 0) {
         my::print_errors_and_exit("Error loading server certificate");
     }
-    if (SSL_CTX_use_PrivateKey_file(ctx.get(), "private/priv_key.pem", SSL_FILETYPE_PEM) <= 0) {
+    if (SSL_CTX_use_PrivateKey_file(ctx.get(), "key/localhost.key.pem", SSL_FILETYPE_PEM) <= 0) {
         my::print_errors_and_exit("Error loading server private key");
     }
-    if (!SSL_CTX_load_verify_locations(ctx.get(),"../certs/ca/certs/ca.cert.pem",NULL)) {
+
+    if (!SSL_CTX_load_verify_locations(ctx.get(),"../certificates/root/ca/intermediate/certs/ca-chain.cert.pem",NULL)) {
                 	ERR_print_errors_fp(stderr);
                 	exit(1);
     }
+    
+    /*
     SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER, NULL); //Set to require client certificate verification 
     SSL_CTX_set_verify_depth(ctx.get(),1);  
-
+    */
     auto accept_bio = my::UniquePtr<BIO>(BIO_new_accept("8080"));
     if (BIO_do_accept(accept_bio.get()) <= 0) {
         my::print_errors_and_exit("Error in BIO_do_accept (binding to port 8080)");
@@ -413,9 +300,7 @@ int main()
             std::string request = my::receive_http_message(bio.get());
             printf("Got request:\n");
             printf("%s\n", request.c_str());
-            parseRequest(request.c_str()); 
-
-            my::send_http_response(bio.get(), "okay cool\n");
+            my::send_http_response(bio.get(), request);
         } catch (const std::exception& ex) {
             printf("Worker exited with exception:\n%s\n", ex.what());
         }

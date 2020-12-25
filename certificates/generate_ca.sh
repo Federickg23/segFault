@@ -237,9 +237,7 @@ authorityKeyIdentifier = keyid,issuer
 keyUsage = critical, digitalSignature
 
 [alt_names]
-DNS.1 = www.server1.com
-DNS.2 = server1.example.com
-DNS.3 = www.server.com' > $RI/openssl.cnf
+DNS.1 = localhost' > $RI/openssl.cnf
 
 
 echo "$RI/openssl.cnf configuration created"
