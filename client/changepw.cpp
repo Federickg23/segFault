@@ -131,7 +131,7 @@ void send_http_request(BIO *bio, const std::string& line, std::string& message, 
     std::string request = line + "\r\n";
     request += "Host: " + host + "\r\n";
     request += "Content Length: " + std::to_string(message.size()) + "\r\n";
-    request += "Method: getcert\r\n\r\n";
+    request += "Method: changepw\r\n\r\n";
     request += message;
 
     BIO_write(bio, request.data(), request.size());
@@ -176,33 +176,12 @@ void verify_the_certificate(SSL *ssl, const std::string& expected_hostname)
 
 } // namespace my
 
-std::string get_csr(char* path)
-{
-	std::fstream file;
-	file.open(path, std::ios::in);
-	
-	if (!file) {
-		fprintf(stderr, "Could not find csr");
-		exit(1);
-	}
-	
-	std::string csr = "";
-	std::string line;
-
-	while ( getline (file,line) )
-    	{
-      		csr+= line + "\n";
-    	}
-	file.close();
-	//Ignore the last new line
-	return csr.substr(0, csr.size()-1);
-}
 int main(int argc, char* argv[])
 {
 
 	if (argc != 4)
 	{
-		std::string message = "Usage: ./getcert [username] [password] [path/to/csr]";
+		std::string message = "Usage: ./changepw [username] [password] [new_pass]";
 		std::cerr << message << std::endl;
 		exit(1);
 	}
@@ -255,32 +234,11 @@ int main(int argc, char* argv[])
     message += "Password: ";
     message += argv[2];
     message += "\r\n\r\n";
-    message += "CSR: ";
-    message += get_csr(argv[3]);
+    message += "New Password: ";
+    message += argv[3];
     message+= "\r\n\r\n";
 
     my::send_http_request(ssl_bio.get(), "GET / HTTP/1.1", message, "localhost");
     std::string response = my::receive_http_message(ssl_bio.get());
-	
-    // First line always HTTP/1.1_ (9 elements, so 10th is error code)
-    std::string response_code = response.substr(9, 3);
-    if (response_code == "200")
-    {
-	    const char* break_line = strcasestr(response.c_str(), "\r\n\r\n");
-	    std::string cert_start = std::string(break_line + 4);
-	    std::string cert = cert_start.substr(0, cert_start.find("\r\n"));
-	    
-	    printf(" --------- Saving Certificate ---------------\n");
-	    std::ofstream cert_file;
-	    std::string filename = "certs/";
-	    filename += argv[1];
-	    filename += ".cert.pem";
-	    cert_file.open(filename.c_str());
-	    cert_file << cert;
-	    cert_file.close();
-	    
-	    printf(" --------- Deleting CSR (Currently not made for faster coding proecess, though simple addition) -------\n");
-
-    }
     printf("%s", response.c_str());
 }

@@ -11,6 +11,10 @@
 #include <crypt.h>
 #include <iostream>
 
+#include "mkcert.c"
+
+#include <openssl/x509.h>
+#include <openssl/pem.h>
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -76,7 +80,7 @@ public:
 
 std::string receive_some_data(BIO *bio)
 {
-    char buffer[1024];
+    char buffer[10000];
     int len = BIO_read(bio, buffer, sizeof(buffer));
     if (len < 0) {
         my::print_errors_and_throw("error in BIO_read");
@@ -139,37 +143,21 @@ std::string get_method(const std::string& message)
 	return method;
 }
 
-std::string get_pass(const std::string& message)
+std::string get_content(const std::string& content, const std::string& message)
 {
 
 	const char* break_line = strcasestr(&message[0], "\r\n\r\n");
         const char* body = break_line + 4;
-	const char* pass_line = strcasestr(body, "Password:");
+	const char* content_line = strcasestr(body, content.c_str());
 
-	if (pass_line == nullptr) {
+	if (content_line == nullptr) {
 		return "";
 	}
 
-	std::string p_s = std::string(pass_line);	
-	std::string password = p_s.substr(10, p_s.find("\r\n")-10); 
-	return password;
-
-}
-
-std::string get_user(const std::string& message)
-{
-
-	const char* break_line = strcasestr(&message[0], "\r\n\r\n");
-        const char* body = break_line + 4;
-	const char* user_line = strcasestr(body, "Username:");
-
-	if (user_line == nullptr) {
-		return "";
-	}
-
-	std::string u_s = std::string(user_line);	
-	std::string username = u_s.substr(10, u_s.find("\r\n")-10); 
-	return username;
+	std::string c_s = std::string(content_line);
+	int l = content.length();	
+	std::string content_value = c_s.substr(l, c_s.find("\r\n")-l);
+	return content_value;
 
 }
 
@@ -188,7 +176,7 @@ std::string login(std::string username, std::string password)
 	std::string hashed_password;
       	getline(file, hashed_password);  // Should only be one line
         file.close();
-
+                           
 	char* c = crypt(password.c_str(), hashed_password.c_str());
 	
 	if (strcmp(c, hashed_password.c_str()) != 0) 
@@ -198,47 +186,127 @@ std::string login(std::string username, std::string password)
 
 	return "Login Success";
 }
-void send_http_response(BIO *bio, const std::string& message)
+
+void write_new_pass(std::string username, char* newpass)
 {
-    std::string method = get_method(message);
+	std::fstream file;
+	std::string filename = "hashed_passwords/" + username + ".txt";
+   	
+	file.open(filename, std::ios::out); 
+        file << newpass << "\n";	
+        file.close();
+}
+void generate_bad_request_error(std::string message, std::string& body, std::string& header)
+{
+	body += message + "\r\n\r\n";
+	header += "HTTP/1.1 400 Bad Request\r\n";
+	header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+}
+
+void generate_internal_error(std::string message, std::string& body, std::string& header)
+{
+	body += message + "\r\n\r\n";
+	header += "HTTP/1.1 500 Internal Server Error\r\n";
+	header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+}
+
+void send_http_response(BIO *bio, const std::string& message, std::string method)
+{
     std::string body = "";
     std::string header = "";
 
-    printf("%s", method.c_str());
-    if (method == "") {
-	    body += "Method option not found\r\n";
+    if (method == "") {generate_bad_request_error("Method option not found", body, header);}
 
-	    header += "HTTP/1.1 400 Bad Request\r\n";
-	    header += "Content-Length: " + std::to_string(body.size()) + "\r\n";
-	    header += "\r\n";
-    }
-
-    if (method.substr(0,7) == "getcert"){
-
-	std::string user = get_user(message);
-	std::string pass = get_pass(message);
-	std::string login_result = login(user, pass);
-    	
-	if(login_result != "Login Success")
-	{
-	    body += login_result + "\r\n\r\n";
-
-	    header += "HTTP/1.1 401 Unauthorized\r\n";
-	    header += "Content-Length: " + std::to_string(body.size()) + "\r\n";
-	    header += "\r\n";
-	}
+    else if (method.substr(0,7) == "getcert"){
+	    
+	    std::string user = get_content("Username: ", message);
+	    if (user == "") {generate_bad_request_error("Username in body not found", body, header); goto write;}
+	    std::string pass = get_content("Password: ", message);
+	    if (pass == "") {generate_bad_request_error("Password in body not found", body, header); goto write;}
+	    std::string csr = get_content("CSR: ", message);
+	    if (csr == "") {generate_bad_request_error("CSR in body not found", body, header); goto write;}
+	    
+	    std::string login_result = login(user, pass);	
+	    if(login_result != "Login Success")
+	    {
+	    
+		    body += login_result + "\r\n\r\n";
+		    header += "HTTP/1.1 401 Unauthorized\r\n";
+		    header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+	    }
+	    
+	    else // Successful login, so generate a certificate
+	    {
+		// Get the req from csr string
+		BIO* req_bio = BIO_new(BIO_s_mem());
+		X509_REQ* req;
 	
-	else
-	{
-		body += "okay cool\r\n";
-    		body += get_pass(message) + "\r\n";
-		body += get_user(message) + "\r\n";
+		BIO_puts(req_bio, csr.c_str());
+		req = PEM_read_bio_X509_REQ(req_bio, NULL, NULL, NULL);
+
+		BIO* cert_bio = BIO_new(BIO_s_mem());
+		std::string result = mkcert(cert_bio, req);
+	
+		if (result != "Success")
+		{
+			printf(result.c_str());
+			generate_internal_error("Error in generating certificate", body, header);
+			goto write;	
+		}
+
+		BUF_MEM *bio_buf;
+    		BIO_get_mem_ptr(cert_bio, &bio_buf);
+		std::string cert  = std::string(bio_buf->data, bio_buf->length);
+
+		body += cert + "\r\n";
 		header += "HTTP/1.1 200 OK\r\n";
     		header += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     		header += "\r\n";
-	}
+	    }	
+    }
+    else if (method == "changepw")
+    {
+	    std::string user = get_content("Username: ", message);
+	    if (user == "") {generate_bad_request_error("Username in body not found", body, header); goto write;}
+	    std::string pass = get_content("Password: ", message);
+	    if (pass == "") {generate_bad_request_error("Password in body not found", body, header); goto write;}
+	    std::string newpass = get_content("New Password: ", message);
+	    if (newpass == "") {generate_bad_request_error("New Password in body not found", body, header); goto write;}
+	    
+	    std::string login_result = login(user, pass);	
+	    if(login_result != "Login Success")
+	    {
+		    body += login_result + "\r\n\r\n";
+		    header += "HTTP/1.1 401 Unauthorized\r\n";
+		    header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+	    }
+	    
+	    else // Successful login, so generate a new password
+	    {
+		unsigned long seed[2];
+  		char salt[] = "$6$........";
+  		const char *const seedchars =
+  			"./0123456789ABCDEFGHIJKLMNOPQRST"
+  			"UVWXYZabcdefghijklmnopqrstuvwxyz";
+  		char *password;
+  		int i;
+  		seed[0] = time(NULL);
+  		seed[1] = getpid() ^ (seed[0] >> 14 & 0x30000);
+
+  		for (i=0; i<8; i++)
+    			salt[3+i] = seedchars[(seed[i/5] >> (i%5)*6) & 0x3f];
+
+  		password = crypt(newpass.c_str(), salt);
+		write_new_pass(user, password);
+
+	    	body += "Password updated\r\n\r\n";
+	    	header += "HTTP/1.1 200 OK\r\n";
+	    	header += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+	    	header += "\r\n";
+	    }
     }
 
+write:
     BIO_write(bio, header.data(), header.size());
     BIO_write(bio, body.data(), body.size());
     BIO_flush(bio);
@@ -278,10 +346,10 @@ int main()
                 	exit(1);
     }
     
-    /*
+    
     SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER, NULL); //Set to require client certificate verification 
     SSL_CTX_set_verify_depth(ctx.get(),1);  
-    */
+    
     auto accept_bio = my::UniquePtr<BIO>(BIO_new_accept("8080"));
     if (BIO_do_accept(accept_bio.get()) <= 0) {
         my::print_errors_and_exit("Error in BIO_do_accept (binding to port 8080)");
@@ -300,7 +368,15 @@ int main()
             std::string request = my::receive_http_message(bio.get());
             printf("Got request:\n");
             printf("%s\n", request.c_str());
-            my::send_http_response(bio.get(), request);
+	    std::string method = my::get_method(request);
+
+	    if (method == "") 				// Let the response handle this error
+		    my::send_http_response(bio.get(), request, method);
+	    else if (method.substr(0,7) == "getcert")   // Do not verify any certificate
+		    my::send_http_response(bio.get(), request, method);
+	    else if (method.substr(0,8) == "changepw")  // Do not verify any certificate
+	    	    my::send_http_response(bio.get(), request, method);
+
         } catch (const std::exception& ex) {
             printf("Worker exited with exception:\n%s\n", ex.what());
         }
