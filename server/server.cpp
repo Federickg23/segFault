@@ -223,8 +223,8 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
 	    if (user == "") {generate_bad_request_error("Username in body not found", body, header); goto write;}
 	    std::string pass = get_content("Password: ", message);
 	    if (pass == "") {generate_bad_request_error("Password in body not found", body, header); goto write;}
-	    std::string csr = get_content("CSR: ", message);
-	    if (csr == "") {generate_bad_request_error("CSR in body not found", body, header); goto write;}
+	    std::string pubkey = get_content("Public Key: ", message);
+	    if (pubkey == "") {generate_bad_request_error("Public Key in body not found", body, header); goto write;}
 	    
 	    std::string login_result = login(user, pass);	
 	    if(login_result != "Login Success")
@@ -237,15 +237,15 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
 	    
 	    else // Successful login, so generate a certificate
 	    {
-		// Get the req from csr string
-		BIO* req_bio = BIO_new(BIO_s_mem());
-		X509_REQ* req;
+		// Get the public key
+		BIO* pkey_bio = BIO_new(BIO_s_mem());
+		EVP_PKEY* pkey;
 	
-		BIO_puts(req_bio, csr.c_str());
-		req = PEM_read_bio_X509_REQ(req_bio, NULL, NULL, NULL);
+		BIO_puts(pkey_bio, pubkey.c_str());
+		pkey = PEM_read_bio_PUBKEY(pkey_bio, NULL, NULL, NULL);
 
 		BIO* cert_bio = BIO_new(BIO_s_mem());
-		std::string result = mkcert(cert_bio, req);
+		std::string result = mkcert(cert_bio, pkey, user.c_str());
 	
 		if (result != "Success")
 		{

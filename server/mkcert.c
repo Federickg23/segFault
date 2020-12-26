@@ -18,7 +18,75 @@
 /*********** The password for the ca's private key ****************************/
 #define PASS            (void *)"intermediate"
 
-const char* mkcert(BIO* cert_bio, X509_REQ* certreq) {
+X509_REQ         *certreq = NULL;
+
+
+X509_REQ *generate_cert_req(EVP_PKEY *p_key, const char* user) {
+    X509_REQ 		*p_x509_req = NULL;
+    X509_NAME		*x509_name = NULL;
+    int				ret = 0;
+
+    const char		*szCountry = "US";
+    const char		*szProvince = "New York";
+    const char		*szCity = "Brooklyn";
+    const char		*szOrganization = "SegFault";
+    const char		*szCommon = user;
+
+    if (NULL == (p_x509_req = X509_REQ_new())) {
+        printf("failed to create a new X509 REQ\n");
+        goto CLEANUP;
+    }
+
+    if (0 > X509_REQ_set_pubkey(p_x509_req, p_key)) {
+        printf("failed to set pub key\n");
+        X509_REQ_free(p_x509_req);
+        p_x509_req = NULL;
+        goto CLEANUP;
+    }
+
+	// 3. set subject of x509 req
+	x509_name = X509_REQ_get_subject_name(p_x509_req);
+
+	ret = X509_NAME_add_entry_by_txt(x509_name,"C", MBSTRING_ASC, (const unsigned char*)szCountry, -1, -1, 0);
+	if (ret != 1){
+		goto CLEANUP;
+	}
+
+	ret = X509_NAME_add_entry_by_txt(x509_name,"ST", MBSTRING_ASC, (const unsigned char*)szProvince, -1, -1, 0);
+	if (ret != 1){
+		goto CLEANUP;
+	}
+
+	ret = X509_NAME_add_entry_by_txt(x509_name,"L", MBSTRING_ASC, (const unsigned char*)szCity, -1, -1, 0);
+	if (ret != 1){
+		goto CLEANUP;
+	}	
+
+	ret = X509_NAME_add_entry_by_txt(x509_name,"O", MBSTRING_ASC, (const unsigned char*)szOrganization, -1, -1, 0);
+	if (ret != 1){
+		goto CLEANUP;
+	}
+
+	ret = X509_NAME_add_entry_by_txt(x509_name,"CN", MBSTRING_ASC, (const unsigned char*)szCommon, -1, -1, 0);
+	if (ret != 1){
+		goto CLEANUP;
+	}
+
+    if (0 > X509_REQ_sign(p_x509_req, p_key, EVP_sha256())) {
+        printf("failed to sign the certificate\n");
+        X509_REQ_free(p_x509_req);
+        p_x509_req = NULL;
+        goto CLEANUP;
+    }
+
+CLEANUP:
+    EVP_PKEY_free(p_key);
+
+    return p_x509_req;
+}
+
+
+const char* mkcert(BIO* cert_bio, EVP_PKEY* pkey, const char* user) {
 
   ASN1_INTEGER                 *aserial = NULL;
   EVP_PKEY                     *ca_privkey, *req_pubkey;
@@ -29,14 +97,30 @@ const char* mkcert(BIO* cert_bio, X509_REQ* certreq) {
   FILE                         *fp;
   long                         valid_secs = 31536000;
 
-   // These function calls initialize openssl for correct work.  *
+  RSA				*rsa = NULL;
+  BIGNUM			*bne = NULL;   
+  int				bits = 2048;
+  unsigned long			e = RSA_F4;
+
+	// These function calls initialize openssl for correct work.  *
   OpenSSL_add_all_algorithms();
   ERR_load_BIO_strings();
   ERR_load_crypto_strings();
 
+	// 1. generate rsa key
+	bne = BN_new();
+	BN_set_word(bne,e);
+
+	rsa = RSA_new();
+	RSA_generate_key_ex(rsa, bits, bne, NULL);
+
+  EVP_PKEY_assign_RSA(pkey, rsa);
+  if (! (certreq = generate_cert_req(pkey, user))) {
+   	return "Error can't read X509 request data into memory";
+   }
 
   /* -------------------------------------------------------- *
-   * Load ithe signing CA Certificate file                    *
+   * Load in the signing CA Certificate file                    *
    * ---------------------------------------------------------*/
   if (! (fp=fopen(CACERT, "r"))) {
 	  return "Error Reading CA cert file";
@@ -170,6 +254,10 @@ const char* mkcert(BIO* cert_bio, X509_REQ* certreq) {
 
   EVP_PKEY_free(req_pubkey);
   EVP_PKEY_free(ca_privkey);
+  BN_free(bne);
   X509_free(newcert);
+  X509_REQ_free(certreq);
+  EVP_PKEY_free(pkey);
+
   return "Success";
 }
