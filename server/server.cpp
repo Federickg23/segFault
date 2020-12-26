@@ -257,6 +257,15 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
 		BUF_MEM *bio_buf;
     		BIO_get_mem_ptr(cert_bio, &bio_buf);
 		std::string cert  = std::string(bio_buf->data, bio_buf->length);
+		
+		// Server also saves cert
+		std::ofstream cert_file;
+	    	std::string filename = "clientcerts/";
+	    	filename += user;
+	    	filename += ".cert.pem";
+	    	cert_file.open(filename.c_str());
+	    	cert_file << cert;
+	    	cert_file.close();
 
 		body += cert + "\r\n";
 		header += "HTTP/1.1 200 OK\r\n";
