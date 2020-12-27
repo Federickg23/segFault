@@ -187,6 +187,16 @@ std::string login(std::string username, std::string password)
 	return "Login Success";
 }
 
+SSL *get_ssl(BIO *bio)
+{
+    SSL *ssl = nullptr;
+    BIO_get_ssl(bio, &ssl);
+    if (ssl == nullptr) {
+        my::print_errors_and_exit("Error in BIO_get_ssl");
+    }
+    return ssl;
+}
+
 void write_new_pass(std::string username, char* newpass)
 {
 	std::fstream file;
@@ -210,6 +220,34 @@ void generate_internal_error(std::string message, std::string& body, std::string
 	header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
 }
 
+int verify_the_certificate(SSL *ssl, std::string& user)
+{
+    int err = SSL_get_verify_result(ssl);
+    if (err != X509_V_OK) {
+        const char *message = X509_verify_cert_error_string(err);
+        fprintf(stderr, "Certificate verification error: %s (%d)\n", message, err);
+        return 1;
+    }
+    X509 *cert = SSL_get_peer_certificate(ssl);
+    if (cert == nullptr) {
+        fprintf(stderr, "No certificate was presented by the client\n");
+        return 1;
+    }
+
+    return 0;
+}
+
+void send_certificate_error_response(BIO *bio)
+{
+	std::string body = "Could not verify certificate\r\n\r\n";
+	std::string header = "HTTP/1.1 401 Unauthorized\r\n";
+	header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+	
+	BIO_write(bio, header.data(), header.size());
+	BIO_write(bio, body.data(), body.size());
+	BIO_flush(bio);
+
+}
 void send_http_response(BIO *bio, const std::string& message, std::string method)
 {
     std::string body = "";
@@ -273,7 +311,7 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
     		header += "\r\n";
 	    }	
     }
-    else if (method == "changepw")
+    else if (method.substr(0,8) == "changepw")
     {
 	    std::string user = get_content("Username: ", message);
 	    if (user == "") {generate_bad_request_error("Username in body not found", body, header); goto write;}
@@ -314,6 +352,74 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
 	    	header += "\r\n";
 	    }
     }
+    else if (method.substr(0,7) == "sendmsg")
+    {
+	    std::string cert = get_content("Certificate: ", message);
+	    if (cert == "") {generate_bad_request_error("Certificate in body not found", body, header); goto write;}
+	    
+            // Convert certificate string to X509, so we can extract the commonname
+	    BIO *cbio;
+	    X509 *certificate;
+	    
+	    cbio = BIO_new(BIO_s_mem());
+	    BIO_puts(cbio, cert.c_str());
+	    certificate = PEM_read_bio_X509(cbio, NULL, NULL, NULL);
+
+	    X509_NAME *subj = X509_get_subject_name(certificate);
+	    char cn[1024];
+
+            int name_len = X509_NAME_get_text_by_NID(subj, NID_commonName, cn, sizeof(cn));
+            if (name_len == -1) {
+
+		    	body += "Unable to locate certificate CN\r\n\r\n";
+		    	header += "HTTP/1.1 401 Unauthorized\r\n";
+		    	header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+			goto write;
+
+            } else if (name_len != (int)strlen(cn)) {
+
+			body += "Certificate CN= is malformed\r\n\r\n";
+		    	header += "HTTP/1.1 401 Unauthorized\r\n";
+		    	header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+			goto write;
+            }
+
+	    // Find the certificate file, if it exists
+	    std::fstream file;
+	    std::string filename = "clientcerts/" + std::string(cn) + ".cert.pem";
+   	
+	    file.open(filename, std::ios::in);  
+   	    if(!file.is_open()) //checking whether the file is open
+   	    {
+		body += "Certificate not found in database - user does not exist\r\n\r\n";
+		header += "HTTP/1.1 401 Unauthorized\r\n";
+		header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+		goto write;
+      	    }
+
+	    std::string line;
+	    std::string cert_to_verify;
+	     
+	    while(getline(file, line))
+	    	{cert_to_verify += line + "\n";}
+	    file.close();
+
+	    cert_to_verify = cert_to_verify.substr(0,cert_to_verify.size()-1);
+	    
+	    if (cert_to_verify != cert)
+	    {
+	    	body += "Certificate verification failed\r\n\r\n";
+		header += "HTTP/1.1 401 Unauthorized\r\n";
+		header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+		goto write;
+
+	    }
+
+	    body += cn;
+	    body +="\r\n\r\n";
+	    header += "HTTP/1.1 200 OK\r\n";
+	    header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+    }
 
 write:
     BIO_write(bio, header.data(), header.size());
@@ -346,6 +452,7 @@ int main()
     if (SSL_CTX_use_certificate_file(ctx.get(), "certs/localhost.cert.pem", SSL_FILETYPE_PEM) <= 0) {
         my::print_errors_and_exit("Error loading server certificate");
     }
+    
     if (SSL_CTX_use_PrivateKey_file(ctx.get(), "key/localhost.key.pem", SSL_FILETYPE_PEM) <= 0) {
         my::print_errors_and_exit("Error loading server private key");
     }
@@ -374,18 +481,28 @@ int main()
             | my::UniquePtr<BIO>(BIO_new_ssl(ctx.get(), 0))
             ;
         try {
+	    
+	    if (BIO_do_handshake(bio.get()) <= 0)
+	    {
+		    printf("Error in bio handshake");
+		    continue;
+	    }
             std::string request = my::receive_http_message(bio.get());
             printf("Got request:\n");
             printf("%s\n", request.c_str());
 	    std::string method = my::get_method(request);
-
+    	    
+	    my::send_http_response(bio.get(), request, method);
+	    /*
 	    if (method == "") 				// Let the response handle this error
 		    my::send_http_response(bio.get(), request, method);
 	    else if (method.substr(0,7) == "getcert")   // Do not verify any certificate
 		    my::send_http_response(bio.get(), request, method);
+	    else if (method.substr(0,7) == "sendmsg")   // Verfiy certificate first
+	    {
 	    else if (method.substr(0,8) == "changepw")  // Do not verify any certificate
 	    	    my::send_http_response(bio.get(), request, method);
-
+	    */
         } catch (const std::exception& ex) {
             printf("Worker exited with exception:\n%s\n", ex.what());
         }

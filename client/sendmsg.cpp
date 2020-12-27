@@ -130,8 +130,8 @@ void send_http_request(BIO *bio, const std::string& line, std::string& message, 
 {
     std::string request = line + "\r\n";
     request += "Host: " + host + "\r\n";
-    request += "Content Length: " + std::to_string(message.size()) + "\r\n";
-    request += "Method: changepw\r\n\r\n";
+    request += "Content-Length: " + std::to_string(message.size()) + "\r\n";
+    request += "Method: sendmsg\r\n\r\n";
     request += message;
 
     BIO_write(bio, request.data(), request.size());
@@ -147,6 +147,29 @@ SSL *get_ssl(BIO *bio)
         my::print_errors_and_exit("Error in BIO_get_ssl");
     }
     return ssl;
+}
+
+std::string get_cert(char* filepath)
+{
+	// Check if username exists
+	std::fstream file;
+   	
+	file.open(filepath, std::ios::in);  
+   	if(!file.is_open()) //checking whether the file is open
+   	{
+		printf("Cert file not found\n");
+		exit (1);
+      	}
+	
+	std::string cert = "";
+	std::string line;
+      	while(getline(file, line))
+	{
+		cert += line + "\n";
+	}
+
+        file.close();
+        return cert.substr(0, cert.size()-1);	
 }
 
 void verify_the_certificate(SSL *ssl, const std::string& expected_hostname)
@@ -179,7 +202,7 @@ void verify_the_certificate(SSL *ssl, const std::string& expected_hostname)
 int main(int argc, char* argv[])
 {
 
-	if (argc != 4)
+	if (argc != 3)
 	{
 		std::string message = "Usage: ./sendmsg [path/to/certificate] [path/to/message]";
 		std::cerr << message << std::endl;
@@ -198,6 +221,10 @@ int main(int argc, char* argv[])
     auto ctx = my::UniquePtr<SSL_CTX>(SSL_CTX_new(TLS_client_method()));
 #endif
  
+    if (SSL_CTX_use_certificate_file(ctx.get(), argv[1], SSL_FILETYPE_PEM) <= 0) {
+        my::print_errors_and_exit("Error loading client certificate");
+    }
+
     /* Load trusted CA. */ 
     if (!SSL_CTX_load_verify_locations(ctx.get(),"../certificates/root/ca/intermediate/certs/ca-chain.cert.pem",NULL)) {
                 	ERR_print_errors_fp(stderr);
@@ -227,16 +254,9 @@ int main(int argc, char* argv[])
     
     my::verify_the_certificate(my::get_ssl(ssl_bio.get()), "localhost");
    
-    std::string message = "Username: ";
-
-    message += argv[1];
-    message += "\r\n";
-    message += "Password: ";
-    message += argv[2];
+    std::string message = "Certificate: ";
+    message += my::get_cert(argv[1]);
     message += "\r\n\r\n";
-    message += "New Password: ";
-    message += argv[3];
-    message+= "\r\n\r\n";
 
     my::send_http_request(ssl_bio.get(), "GET / HTTP/1.1", message, "localhost");
     std::string response = my::receive_http_message(ssl_bio.get());
