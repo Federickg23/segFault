@@ -1,37 +1,34 @@
 # segFault
 
-Basically, the server side will accept requests, but the requests must indicate what the client wants each time. 
+### Usage 
 
-So server should, for `getcert`, lets say: 
+You will mainly be interacting with `server` and `client` folder. Each folder has their respective README.
 
-```
-method = read_https_request()
-if method == getcert:
-  user, password = read_https_request()
-  import login
-  if login.verify(user, password) == 0:
-    send_https_response( "INVALID LOGIN" )
-  else:
-    cert = generate_certificate(user + password)
-    send_https_response(cert)
-    ### code to save cert on server ###
-```
+But, there is one thing that first must be set up - the server's certificates and the CA. Currently, it is setup.
+But depending on when this is being read, the certificates may have expired.
 
-On the client side, it should somehow send the http request formatted properly, indicating the method, password, and user.
-Then when it recieves the certificate (if response isn't an error) as a string, it just stores that into a file (cert.pem) 
+1. `server/` holds all the files for the server end
+2. `client/` holds all the files for the client end
+3. `logins.txt` is an important file to reference for login usernames and passwords
+4. `certificates` is a folder that holds the CA, Intermediate CA, and process to generate the server's certificates
 
-For `changepw` the idea is very similar:
+### Default (Use as is right now)
 
-```
-method = read_https_request()
-if method == changepw:
-  user, password = read_https_request()
-  import login
-  if login.verify(user, password) == 0:
-    send_https_response( "INVALID LOGIN" )
-  else:
-    new_pass = read_https_request()
-    cert = generate_certificate(user + new_pass)
-    send_https_response(cert)
-    ### code to save cert on server - OVERWRITE previous one###
-```
+Currently, the certificates should all be set up. So, you can proceed to `server/` first.
+
+But, I want to point out the current passwords for the certificates:
+
+For server: its "server"
+For CA: its "root"
+For Intermediate CA: its "intermediate"
+
+The name of the certificates / keys are as such:
+
+1. server runs on localhost, so the certificate is `localhost.cert.pem` and key is likewise
+2. the intermediate CA has it's certificate as `intermediate.cert.pem`
+3. the CA has it's certificate as `ca.cert.pem`
+
+For more details on this fundemental certificate generation, proceed to the `certificates/` directory. 
+
+
+

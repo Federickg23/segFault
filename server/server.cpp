@@ -415,6 +415,7 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
 
 	    }
 
+	    /* TODO: Now that cert is valid, proceed with sending the message */
 	    body += cn;
 	    body +="\r\n\r\n";
 	    header += "HTTP/1.1 200 OK\r\n";
@@ -493,16 +494,6 @@ int main()
 	    std::string method = my::get_method(request);
     	    
 	    my::send_http_response(bio.get(), request, method);
-	    /*
-	    if (method == "") 				// Let the response handle this error
-		    my::send_http_response(bio.get(), request, method);
-	    else if (method.substr(0,7) == "getcert")   // Do not verify any certificate
-		    my::send_http_response(bio.get(), request, method);
-	    else if (method.substr(0,7) == "sendmsg")   // Verfiy certificate first
-	    {
-	    else if (method.substr(0,8) == "changepw")  // Do not verify any certificate
-	    	    my::send_http_response(bio.get(), request, method);
-	    */
         } catch (const std::exception& ex) {
             printf("Worker exited with exception:\n%s\n", ex.what());
         }

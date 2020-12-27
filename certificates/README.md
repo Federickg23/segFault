@@ -4,15 +4,20 @@ Michael Grandel - mg3856
 
 ## Initialize
 
+NOTE: This README is in depth, and usage is the same, but certificates are not necesarrily stored in the
+same places described. When making the server certificate, it will end up in the `segFault/server/cert/` directory,
+not in the intermediate directory here.
+
+client certificates are not used.
+
+
 The base file structure should be:
 
 \_ generate_ca.sh
 \_ get_certificate.sh
 \_ clean.sh
 \_ server
-	\_ launch.sh
 \_ client
-	\_ launch.sh
 
 
 To begin, we need to generate a CA. This is done via the `generate_ca.sh` shell script.
@@ -75,7 +80,6 @@ Once the CSR is approved, the key and certificate is stored in the `root/ca/inte
 copied to the `server` folder. Here will be the new file structure:
 
 server/
-\_ launch.sh
 \_ certs
 	\_ www.myserver.com.cert.pem
 	\_ ca-chain.cert.pem
@@ -101,7 +105,6 @@ You can make multiple certifications. Suppose you do this again, with a differen
 This will result in:
 
 server/
-\_ launch.sh
 \_ certs
 	\_ www.myserver.com.cert.pem
 	\_ another.server.com.cert.pem
