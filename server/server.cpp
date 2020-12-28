@@ -12,7 +12,7 @@
 #include <iostream>
 
 #include "mkcert.c"
-#include "send.cpp"
+#include "mail-utils.cpp"
 
 #include <openssl/x509.h>
 #include <openssl/pem.h>
@@ -265,10 +265,10 @@ void get_enc_msg(std::string response, std::vector<std::string>& recipients, std
 		// Now we find the end of the msg.
 		pos = body.find("\r\n");
 
-		std::string cert = body.substr(0, pos);
+		std::string enc = body.substr(0, pos);
 		body.erase(0, pos + 2);
 
-		buffer.push_back(cert);
+		buffer.push_back(enc);
 		recipients.push_back(recipient);
 		
 	}
@@ -491,13 +491,95 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
 	    {
 		    std::string rec = recipients.operator[](i);
 		    std::string m = encmsg.operator[](i);
-		    send(rec, m); // From send.cpp
+		    send(rec, m); // From mail-utils.cpp
 	    }
 
 	    body += "Messages Uploaded\r\n\r\n";
 	    header += "HTTP/1.1 200 OK\r\n";
 	    header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
 
+    }
+    
+    else if (method.substr(0,7) == "recvmsg")
+    {
+	    std::string cert = get_content("Certificate: ", message);
+	    if (cert == "") {generate_bad_request_error("Certificate in body not found", body, header); goto write;}
+
+            // Convert certificate string to X509, so we can extract the commonname
+	    BIO *cbio;
+	    X509 *certificate;
+	    
+	    cbio = BIO_new(BIO_s_mem());
+	    BIO_puts(cbio, cert.c_str());
+	    certificate = PEM_read_bio_X509(cbio, NULL, NULL, NULL);
+
+	    X509_NAME *subj = X509_get_subject_name(certificate);
+	    char cn[1024];
+
+            int name_len = X509_NAME_get_text_by_NID(subj, NID_commonName, cn, sizeof(cn));
+            if (name_len == -1) {
+
+		    	body += "Unable to locate certificate CN\r\n\r\n";
+		    	header += "HTTP/1.1 401 Unauthorized\r\n";
+		    	header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+			goto write;
+
+            } else if (name_len != (int)strlen(cn)) {
+
+			body += "Certificate CN= is malformed\r\n\r\n";
+		    	header += "HTTP/1.1 401 Unauthorized\r\n";
+		    	header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+			goto write;
+            }
+
+	    // Find the certificate file, if it exists
+	    std::fstream file;
+	    std::string filename = "clientcerts/" + std::string(cn) + ".cert.pem";
+   	
+	    file.open(filename, std::ios::in);  
+   	    if(!file.is_open()) //checking whether the file is open
+   	    {
+		body += "Certificate not found in database\r\n\r\n";
+		header += "HTTP/1.1 401 Unauthorized\r\n";
+		header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+		goto write;
+      	    }
+
+	    std::string line;
+	    std::string cert_to_verify;
+	     
+	    while(getline(file, line))
+	    	{cert_to_verify += line + "\n";}
+	    file.close();
+
+	    cert_to_verify = cert_to_verify.substr(0,cert_to_verify.size()-1);
+	    
+	    if (cert_to_verify != cert)
+	    {
+	    	body += "Certificate verification failed\r\n\r\n";
+		header += "HTTP/1.1 401 Unauthorized\r\n";
+		header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+		goto write;
+
+	    }
+
+	    // If successful login, then we get the next message and send it.
+	    
+	    std::string message;
+	    int status = recv(std::string(cn), message);
+	    if (status == 1)
+	    {
+		    body += "No pending messages\r\n\r\n";
+		    header += "HTTP/1.1 200 OK\r\n";
+		    header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+		    goto write;
+	    }
+
+	    body += "Encrypted Message: ";
+	    body += message;
+	    body += "\r\n\r\n";
+	    header += "HTTP/1.1 200 OK\r\n";
+	    header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
     }
 
 write:
