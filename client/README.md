@@ -22,7 +22,7 @@ home directory, so do not try to log in with a user that does not exist.
 
 The usage is:
 
-`./getcert [username] [password] [path/to/car]`
+`./getcert [username] [password] [path/to/csr]`
 
 Pretty straight forward. The certificate will be stored then in the certs folder. (The server will retain a copy).
 
@@ -37,9 +37,19 @@ Very straight forward. Simply run:
 ### sendmsg
 
 The message format will follow that as done in the homeworks. But, your certificate will also be sent over and verified. So you would need
-to include that too.
+to include that too. (Currently, does not parse the messages for recipients and all. There seems to be an issue with decryption - just sends the whole message).
 
 `./sendmsg [path/to/cert] [path/to/message]`
+
+
+### recvmsg
+First, you need to have mail in your inbox. If not, that is okay - you will get a response saying you have none.
+
+Typically for testing, you can try to use sendmsg to send a message to yourself.
+
+The usage is:
+
+`./recvmsg [path/to/cert] [path/to/private_key]
 
 ### Details
 Each .cpp file generally works the same and has a lot of the same code. We didn't have the chance to make a very friendly design and import
