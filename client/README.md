@@ -51,6 +51,10 @@ The usage is:
 
 `./recvmsg [path/to/cert] [path/to/private_key]
 
+(Currently, there seems to be an issue. The messages recieved cannot seemed to be parsed by SMIME_read_CMS(). Not sure why... Try running this
+and you'll see).
+
+
 ### Details
 Each .cpp file generally works the same and has a lot of the same code. We didn't have the chance to make a very friendly design and import
 similar functions from a universal file. 
