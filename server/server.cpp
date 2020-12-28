@@ -248,6 +248,32 @@ void send_certificate_error_response(BIO *bio)
 	BIO_flush(bio);
 
 }
+
+void get_enc_msg(std::string response, std::vector<std::string>& recipients, std::vector<std::string>& buffer)
+{
+	const char* break_line = strcasestr(&response[0], "\r\n\r\n");
+	std::string body = break_line + 4;
+
+	size_t pos = 0;
+	// First find is of the recipients
+	while ((pos = body.find(": ")) != std::string::npos) {
+		
+		std::string recipient = body.substr(0, pos);
+    		body.erase(0, pos + 2); // Removes the recipient part
+		
+		// Now we find the end of the msg.
+		pos = body.find("\r\n");
+
+		std::string cert = body.substr(0, pos);
+		body.erase(0, pos + 2);
+
+		buffer.push_back(cert);
+		recipients.push_back(recipient);
+		
+	}
+
+}
+
 void send_http_response(BIO *bio, const std::string& message, std::string method)
 {
     std::string body = "";
@@ -283,7 +309,7 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
 		pkey = PEM_read_bio_PUBKEY(pkey_bio, NULL, NULL, NULL);
 
 		BIO* cert_bio = BIO_new(BIO_s_mem());
-		std::string result = mkcert(cert_bio, pkey, user.c_str());
+		std::string result = mkcert(cert_bio, pkey, user.c_str(), pass.c_str());
 	
 		if (result != "Success")
 		{
@@ -449,6 +475,32 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
 	    body +="\r\n\r\n";
 	    header += "HTTP/1.1 200 OK\r\n";
 	    header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+    } 
+    
+    else if (method.substr(0,8) == "2sendmsg" )  // Second part of send msg
+    {
+	    // Upload the messages to the respective users.
+	    std::string m_copy = message;
+	    std::vector<std::string> recipients, encmsg;
+
+	    get_enc_msg(m_copy, recipients, encmsg);
+
+	    for(int i = 0; i < (int)encmsg.size(); i++)
+	    {
+		    std::string rec = recipients.operator[](i);
+		    std::string m = encmsg.operator[](i);
+
+		    std::fstream file;
+		    std::string filename = "mail/" + rec + "/a.txt"; // TODO: Need to change this to hw3 solution message counter
+		    file.open(filename, std::ios::out);
+		    file << m;
+		    file.close();
+	    }
+
+	    body += "Messages Uploaded\r\n\r\n";
+	    header += "HTTP/1.1 200 OK\r\n";
+	    header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+
     }
 
 write:

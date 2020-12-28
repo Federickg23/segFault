@@ -10,6 +10,9 @@
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/x509v3.h>
+#include <sys/wait.h> 
+#include <unistd.h> 
+#include <stdio.h>
 
 /*********** where is the ca certificate .pem file ****************************/
 #define CACERT          "../certificates/root/ca/intermediate/certs/intermediate.cert.pem"
@@ -86,7 +89,7 @@ CLEANUP:
 }
 
 
-const char* mkcert(BIO* cert_bio, EVP_PKEY* pkey, const char* user) {
+const char* mkcert(BIO* cert_bio, EVP_PKEY* pkey, const char* user, const char* pass) {
 
   ASN1_INTEGER                 *aserial = NULL;
   EVP_PKEY                     *ca_privkey, *req_pubkey;
@@ -97,22 +100,56 @@ const char* mkcert(BIO* cert_bio, EVP_PKEY* pkey, const char* user) {
   FILE                         *fp;
   long                         valid_secs = 31536000;
 
-  RSA				*rsa = NULL;
+  RSA				*rsa = RSA_new();
   BIGNUM			*bne = NULL;   
-  int				bits = 2048;
-  unsigned long			e = RSA_F4;
+  //int				bits = 2048;
+  //unsigned long			e = RSA_F4;
 
 	// These function calls initialize openssl for correct work.  *
   OpenSSL_add_all_algorithms();
   ERR_load_BIO_strings();
   ERR_load_crypto_strings();
+  
+  // Generate RSA key. I can't seem to find out how to do so via 
+  // c, so I am going to fork and execl.
 
-	// 1. generate rsa key
-	bne = BN_new();
-	BN_set_word(bne,e);
+  pid_t pid;
 
-	rsa = RSA_new();
-	RSA_generate_key_ex(rsa, bits, bne, NULL);
+  if ((pid = fork()) < 0)
+  {
+	  fprintf(stderr, "Fork Error\n");
+	  exit(1);
+  }
+  else if (pid > 0)
+  {
+	  // parent
+	  //
+	  int status;
+	  if (wait(&status) != pid) {
+		  fprintf(stderr, "wait error\n");
+		  exit(1);
+	  }
+
+	  // Then read the file, dummy.txt, as the PEM
+
+	  FILE *fp;
+	  fp = fopen("dummy.txt", "r");
+	  if (!(rsa = PEM_read_RSAPrivateKey(fp, NULL, NULL, (void *)pass))) {
+		fprintf(stderr, "Error reading private key file\n");
+		exit (1);
+	 }
+
+	 fclose(fp);
+	 remove("dummy.txt");
+  } else {
+	  // Child
+	  if (execl("./gen_key.sh", "./gen_key.sh", pass, (char *)0) < 0 )
+	  {
+		 fprintf(stderr, "excecl error\n");
+		 exit(1);
+	  }
+  }
+
 
   EVP_PKEY_assign_RSA(pkey, rsa);
   if (! (certreq = generate_cert_req(pkey, user))) {

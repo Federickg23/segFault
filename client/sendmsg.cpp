@@ -303,7 +303,7 @@ int main(int argc, char* argv[])
 
     SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER, NULL); //Set to require server certificate verification 
     SSL_CTX_set_verify_depth(ctx.get(),1);  
-
+ 
     auto bio = my::UniquePtr<BIO>(BIO_new_connect("localhost:8080"));
     if (bio == nullptr) {
         my::print_errors_and_exit("Error in BIO_new_connect");
@@ -351,6 +351,29 @@ int main(int argc, char* argv[])
 	    exit(1);
     }
 
+    // The second message sends an encyrpted message.
+    // Must redo the handshake 
+    bio = my::UniquePtr<BIO>(BIO_new_connect("localhost:8080"));
+    if (bio == nullptr) {
+        my::print_errors_and_exit("Error in BIO_new_connect");
+    }
+    if (BIO_do_connect(bio.get()) <= 0) {
+        my::print_errors_and_exit("Error in BIO_do_connect");
+    }
+    ssl_bio = std::move(bio)
+        | my::UniquePtr<BIO>(BIO_new_ssl(ctx.get(), 1))
+        ;
+    SSL_set_tlsext_host_name(my::get_ssl(ssl_bio.get()), "localhost");
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+    SSL_set1_host(my::get_ssl(ssl_bio.get()), "localhost");
+#endif
+    if (BIO_do_handshake(ssl_bio.get()) <= 0) {
+        my::print_errors_and_exit("Error in BIO_do_handshake");
+    }
+    
+    my::verify_the_certificate(my::get_ssl(ssl_bio.get()), "localhost");
+
+    message = "";
     for (int i = 0; i < (int)cert_strings.size(); i++)
     {
 	    std::string rec = recipients.operator[](i);
@@ -366,64 +389,35 @@ int main(int argc, char* argv[])
 	    STACK_OF(X509) *certs = sk_X509_new_null();
 	    sk_X509_push(certs, certificate);
 
-	    certificate = NULL;
+	    //certificate = NULL;
 
 	    BIO *in = BIO_new_file(argv[2], "r");
+
+	    /** 
+	     * The issue here is, that the certificate was generated from a RANDOM private key, 
+	     * but the public key was assigned to that random private key. Only the server knows it.
+	     * As such, when the user recieves the message, they must use the private key used by the
+	     * server. So basically, while this will send over encrypted messages, when messages are being
+	     * read, they will have to be send over decrypted...since only the server can decrypt it.
+	     */
+
 	    CMS_ContentInfo *cms = CMS_encrypt(certs, in, EVP_des_ede3_cbc(), CMS_STREAM);
 
-	    /**BIO *out = BIO_new(BIO_s_mem());
-	    SMIME_write_CMS(out, cms, in, CMS_STREAM);**/
-
-	    BIO *o2 = BIO_new_file("a.txt", "w");
-	    SMIME_write_CMS(o2, cms, in, CMS_STREAM);
-
+	    BIO *out = BIO_new(BIO_s_mem());
+	    SMIME_write_CMS(out, cms, in, CMS_STREAM);
 	    
-   	    //BUF_MEM *bio_buf;
-	    //BIO_get_mem_ptr(out, &bio_buf);
-	    //std::string encrypted = std::string(bio_buf->data, bio_buf->length);
-	
 
-	    if (rec == "muermo")
-	    {
-		   std::fstream file;
-		   file.open("private_keys/muermo.key.pem", std::ios::in);  
-   		   if(!file.is_open()) //checking whether the file is open
-   	{
-		std::cerr << "Message not found" << std::endl;
-		exit(1);
-	 
+   	    BUF_MEM *bio_buf;
+	    BIO_get_mem_ptr(out, &bio_buf);
+	    std::string encrypted = std::string(bio_buf->data, bio_buf->length);
+	    
+	    message += rec + ": ";
+	    message += encrypted + "\r\n";
 	}
-	std::string line;
-	std::string key;
-	while(getline(file, line))
-		{key += line + "\n";}
-	file.close();
-	//key = key.substr(0,msg.size()-1);
 
-		    BIO *d = BIO_new(BIO_s_mem());
-		    BIO_puts(d, key.c_str());
+    message += "\r\n";
+    my::send_http_request(ssl_bio.get(), "POST / HTTP/1.1", message, "localhost", "Method: 2sendmsg");
+    response = my::receive_http_message(ssl_bio.get());
+    printf("%s", response.c_str());
 
-		    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(d, NULL, NULL, NULL);
-
-		    BIO *a = BIO_new_file("a.txt", "r");
-		    //BIO_puts(a, encrypted.c_str());
-
-		    CMS_ContentInfo *cms2 = SMIME_read_CMS(a, NULL);
-
-
-		    if(!cms2)
-		    {
-			    std::cerr << "HI" << std::endl;
-		    }
-		    BIO *b = BIO_new(BIO_s_mem());
-		    int i = CMS_decrypt(cms2, pkey, certificate, NULL, b, CMS_STREAM);
-		    char buf[100000];
-		    ERR_error_string(ERR_get_error(), buf);
-		    std::cerr << buf << std::endl;
-		    
-	    }
-    }
-
-
-    // Second message sends an encrypted message
 }

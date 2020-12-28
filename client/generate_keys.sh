@@ -9,12 +9,10 @@ then
 	exit 1
 fi
 
-openssl genrsa -aes256 \
-	-out private_keys/$id.key.pem 2048
 
-chmod 400 private_keys/$id.key.pem
+openssl genrsa -aes256 \
+	-out private_keys/$id.key.pem 2048 
 
 openssl rsa -in private_keys/$id.key.pem \
 	-pubout -out public_keys/$id.key.pem 
 
-chmod 400 public_keys/$id.key.pem
