@@ -12,6 +12,7 @@
 #include <iostream>
 
 #include "mkcert.c"
+#include "send.cpp"
 
 #include <openssl/x509.h>
 #include <openssl/pem.h>
@@ -287,8 +288,8 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
 	    if (user == "") {generate_bad_request_error("Username in body not found", body, header); goto write;}
 	    std::string pass = get_content("Password: ", message);
 	    if (pass == "") {generate_bad_request_error("Password in body not found", body, header); goto write;}
-	    std::string pubkey = get_content("Public Key: ", message);
-	    if (pubkey == "") {generate_bad_request_error("Public Key in body not found", body, header); goto write;}
+	    std::string csr = get_content("CSR: ", message);
+	    if (csr == "") {generate_bad_request_error("CSR in body not found", body, header); goto write;}
 	    
 	    std::string login_result = login(user, pass);	
 	    if(login_result != "Login Success")
@@ -301,27 +302,33 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
 	    
 	    else // Successful login, so generate a certificate
 	    {
-		// Get the public key
-		BIO* pkey_bio = BIO_new(BIO_s_mem());
-		EVP_PKEY* pkey;
-	
-		BIO_puts(pkey_bio, pubkey.c_str());
-		pkey = PEM_read_bio_PUBKEY(pkey_bio, NULL, NULL, NULL);
+
+		// Get the req from csr string
+		BIO* req_bio = BIO_new(BIO_s_mem());
+		X509_REQ* req;
+
+		BIO_puts(req_bio, csr.c_str());
+		req = PEM_read_bio_X509_REQ(req_bio, NULL, NULL, NULL);
 
 		BIO* cert_bio = BIO_new(BIO_s_mem());
-		std::string result = mkcert(cert_bio, pkey, user.c_str(), pass.c_str());
-	
+		std::string result = mkcert(cert_bio, req);
+
 		if (result != "Success")
 		{
 			printf(result.c_str());
 			generate_internal_error("Error in generating certificate", body, header);
-			goto write;	
+			goto write;
 		}
 
 		BUF_MEM *bio_buf;
     		BIO_get_mem_ptr(cert_bio, &bio_buf);
 		std::string cert  = std::string(bio_buf->data, bio_buf->length);
-		
+
+		body += cert + "\r\n";
+		header += "HTTP/1.1 200 OK\r\n";
+    		header += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+    		header += "\r\n";
+
 		// Server also saves cert
 		std::ofstream cert_file;
 	    	std::string filename = "clientcerts/";
@@ -330,11 +337,6 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
 	    	cert_file.open(filename.c_str());
 	    	cert_file << cert;
 	    	cert_file.close();
-
-		body += cert + "\r\n";
-		header += "HTTP/1.1 200 OK\r\n";
-    		header += "Content-Length: " + std::to_string(body.size()) + "\r\n";
-    		header += "\r\n";
 	    }	
     }
     else if (method.substr(0,8) == "changepw")
@@ -489,12 +491,7 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
 	    {
 		    std::string rec = recipients.operator[](i);
 		    std::string m = encmsg.operator[](i);
-
-		    std::fstream file;
-		    std::string filename = "mail/" + rec + "/a.txt"; // TODO: Need to change this to hw3 solution message counter
-		    file.open(filename, std::ios::out);
-		    file << m;
-		    file.close();
+		    send(rec, m); // From send.cpp
 	    }
 
 	    body += "Messages Uploaded\r\n\r\n";

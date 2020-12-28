@@ -389,23 +389,15 @@ int main(int argc, char* argv[])
 	    STACK_OF(X509) *certs = sk_X509_new_null();
 	    sk_X509_push(certs, certificate);
 
-	    //certificate = NULL;
+	    certificate = NULL;
 
 	    BIO *in = BIO_new_file(argv[2], "r");
 
-	    /** 
-	     * The issue here is, that the certificate was generated from a RANDOM private key, 
-	     * but the public key was assigned to that random private key. Only the server knows it.
-	     * As such, when the user recieves the message, they must use the private key used by the
-	     * server. So basically, while this will send over encrypted messages, when messages are being
-	     * read, they will have to be send over decrypted...since only the server can decrypt it.
-	     */
 
 	    CMS_ContentInfo *cms = CMS_encrypt(certs, in, EVP_des_ede3_cbc(), CMS_STREAM);
 
 	    BIO *out = BIO_new(BIO_s_mem());
 	    SMIME_write_CMS(out, cms, in, CMS_STREAM);
-	    
 
    	    BUF_MEM *bio_buf;
 	    BIO_get_mem_ptr(out, &bio_buf);

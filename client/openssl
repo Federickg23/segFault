@@ -1,1 +1,0 @@
-michael\n genrsa -aes256 -out private_keys/michael.key.pem 2048

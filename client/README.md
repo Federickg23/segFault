@@ -7,11 +7,12 @@ The clients feature the 4 required functions, but also a few important directori
 3. `public_keys` will hold all the client's public keys. Same 'obviously' reason as above
 
 
-Clients need to first get a public key, which is done via the `generate_keys.sh` script.
+Clients need to first get a CSR, which is done via the `gen-csr.sh` script.
 
-Simply run `./generate_keys.sh [username]`
+Simply run `./gen-csr.sh [username]`
 
-You will be asked to choose a password for your private key. Both a public and private key will be generated.
+You will be asked to choose a password for your private key. In addition, when generating the CSR, you MUST use your username as the common name, 
+otherwise your certificate will have issues when trying to send messages.
 
 
 ### getcert
@@ -21,7 +22,7 @@ home directory, so do not try to log in with a user that does not exist.
 
 The usage is:
 
-`./getcert [username] [password] [path/to/public_key]`
+`./getcert [username] [password] [path/to/car]`
 
 Pretty straight forward. The certificate will be stored then in the certs folder. (The server will retain a copy).
 

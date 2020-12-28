@@ -176,7 +176,7 @@ void verify_the_certificate(SSL *ssl, const std::string& expected_hostname)
 
 } // namespace my
 
-std::string get_pub_key(char* path)
+std::string get_csr(char* path)
 {
 	std::fstream file;
 	file.open(path, std::ios::in);
@@ -186,23 +186,24 @@ std::string get_pub_key(char* path)
 		exit(1);
 	}
 	
-	std::string pub_key = "";
+	std::string csr = "";
 	std::string line;
 
 	while ( getline (file,line) )
     	{
-      		pub_key+= line + "\n";
+      		csr+= line + "\n";
     	}
 	file.close();
 	//Ignore the last new line
-	return pub_key.substr(0, pub_key.size()-1);
+	return csr.substr(0, csr.size()-1);
 }
+
 int main(int argc, char* argv[])
 {
 
 	if (argc != 4)
 	{
-		std::string message = "Usage: ./getcert [username] [password] [path/to/pubkey]";
+		std::string message = "Usage: ./getcert [username] [password] [path/to/csr]";
 		std::cerr << message << std::endl;
 		exit(1);
 	}
@@ -255,8 +256,8 @@ int main(int argc, char* argv[])
     message += "Password: ";
     message += argv[2];
     message += "\r\n\r\n";
-    message += "Public Key: ";
-    message += get_pub_key(argv[3]);
+    message += "CSR: ";
+    message += get_csr(argv[3]);
     message+= "\r\n\r\n";
 
     my::send_http_request(ssl_bio.get(), "GET / HTTP/1.1", message, "localhost");
