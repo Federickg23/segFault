@@ -1,9 +1,6 @@
 
-main: client.cpp login.cpp
-	g++ -Wall client.cpp -o client -lcrypto -lssl
-	g++ -Wall login.cpp -o login -lcrypt -lssl	
-	rm -f *.o
-	sudo chown root ./client
-	sudo chmod u+s ./client
-	sudo chmod g-w ./client
-	sudo chmod o-w ./client
+main: getcert.cpp changepw.cpp sendmsg.cpp
+	g++ -Wall getcert.cpp -o getcert -lcrypto -lssl
+	g++ -Wall changepw.cpp -o changepw -lcrypto -lssl
+	g++ -Wall sendmsg.cpp -o sendmsg -lcrypto -lssl
+	g++ -Wall recvmsg.cpp -o recvmsg -lcrypto -lssl

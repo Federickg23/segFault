@@ -12,56 +12,13 @@
 #include <openssl/x509v3.h>
 
 /*********** where is the ca certificate .pem file ****************************/
-#define CACERT          "./serv_cert.pem"
+#define CACERT          "../certificates/root/ca/intermediate/certs/intermediate.cert.pem"
 /*********** where is the ca's private key file *******************************/
-#define CAKEY           "./private/priv_key.pem"
+#define CAKEY           "../certificates/root/ca/intermediate/private/intermediate.key.pem"
 /*********** The password for the ca's private key ****************************/
-#define PASS            "password"
+#define PASS            (void *)"intermediate"
 
-BIO               *reqbio = NULL;
-BIO               *outbio = NULL;
-X509                *cert = NULL;
-X509_REQ         *certreq = NULL;
-
-char request_str[] =
-"-----BEGIN CERTIFICATE REQUEST-----\n\
-MIIBBDCBrwIBADBKMQswCQYDVQQGEwJKUDEOMAwGA1UECAwFVG9reW8xETAPBgNV\n\
-BAoMCEZyYW5rNEREMRgwFgYDVQQDDA93d3cuZXhhbXBsZS5jb20wXDANBgkqhkiG\n\
-9w0BAQEFAANLADBIAkEAm/xmkHmEQrurE/0re/jeFRLl8ZPjBop7uLHhnia7lQG/\n\
-5zDtZIUC3RVpqDSwBuw/NTweGyuP+o8AG98HxqxTBwIDAQABoAAwDQYJKoZIhvcN\n\
-AQEFBQADQQByOV52Y17y8xw1V/xvru3rLPrVxYAXS5SgvNpfBsj38lNVtTvuH/Mg\n\
-roBgmjSpnqKqBiBDkoY2YUET2qmGjAu9\n\
------END CERTIFICATE REQUEST-----";
-
-X509_REQ *generate_cert_req(EVP_PKEY *p_key) {
-    X509_REQ *p_x509_req = NULL;
-
-    if (NULL == (p_x509_req = X509_REQ_new())) {
-        printf("failed to create a new X509 REQ\n");
-        goto CLEANUP;
-    }
-
-    if (0 > X509_REQ_set_pubkey(p_x509_req, p_key)) {
-        printf("failed to set pub key\n");
-        X509_REQ_free(p_x509_req);
-        p_x509_req = NULL;
-        goto CLEANUP;
-    }
-
-    if (0 > X509_REQ_sign(p_x509_req, p_key, EVP_sha256())) {
-        printf("failed to sign the certificate\n");
-        X509_REQ_free(p_x509_req);
-        p_x509_req = NULL;
-        goto CLEANUP;
-    }
-
-    CLEANUP:
-    EVP_PKEY_free(p_key);
-
-    return p_x509_req;
-}
-
-int mkcert() {
+const char* mkcert(BIO* cert_bio, X509_REQ* certreq) {
 
   ASN1_INTEGER                 *aserial = NULL;
   EVP_PKEY                     *ca_privkey, *req_pubkey;
@@ -77,32 +34,16 @@ int mkcert() {
   ERR_load_BIO_strings();
   ERR_load_crypto_strings();
 
-  // Create the Input/Output BIO's.                             *
-  outbio  = BIO_new(BIO_s_file());
-  outbio = BIO_new_fp(stdout, BIO_NOCLOSE);
-
-   // Load the request data in a BIO, then in a x509_REQ struct. *
-  EVP_PKEY *pkey;
-  pkey = EVP_PKEY_new();
-  X509 *x = X509_new();
-  RSA *rsa = RSA_generate_key(512, RSA_F4, NULL, NULL);
-  EVP_PKEY_assign_RSA(pkey, rsa);
-  if (! (certreq = generate_cert_req(pkey))) {
-    BIO_printf(outbio, "Error can't read X509 request data into memory\n");
-    exit -1;
-   }
 
   /* -------------------------------------------------------- *
    * Load ithe signing CA Certificate file                    *
    * ---------------------------------------------------------*/
   if (! (fp=fopen(CACERT, "r"))) {
-    BIO_printf(outbio, "Error reading CA cert file\n");
-    exit -1;
+	  return "Error Reading CA cert file";
    }
 
   if(! (cacert = PEM_read_X509(fp,NULL,NULL,NULL))) {
-    BIO_printf(outbio, "Error loading CA cert into memory\n");
-    exit -1;
+	  return "Error loading CA cert into memory";
    }
 
   fclose(fp);
@@ -113,13 +54,11 @@ int mkcert() {
   ca_privkey = EVP_PKEY_new();
 
   if (! (fp = fopen (CAKEY, "r"))) {
-    BIO_printf(outbio, "Error reading CA private key file\n");
-    exit -1;
+	  return "Error reading CA private key file";
    }
 
   if (! (ca_privkey = PEM_read_PrivateKey( fp, NULL, NULL, PASS))) {
-    BIO_printf(outbio, "Error importing key content from file\n");
-    exit -1;
+	  return "Error importing key content from file";
    }
 
   fclose(fp);
@@ -128,13 +67,11 @@ int mkcert() {
    * Build Certificate with data from request                  *
    * ----------------------------------------------------------*/
   if (! (newcert=X509_new())) {
-    BIO_printf(outbio, "Error creating new X509 object\n");
-    exit -1;
+	  return "Error creating new X509 object";
    }
 
   if (X509_set_version(newcert, 2) != 1) {
-    BIO_printf(outbio, "Error setting certificate version\n");
-    exit -1;
+	  return "Error setting certificate version";
    }
 
   /* --------------------------------------------------------- *
@@ -144,82 +81,90 @@ int mkcert() {
   aserial=ASN1_INTEGER_new();
   ASN1_INTEGER_set(aserial, 0);
   if (! X509_set_serialNumber(newcert, aserial)) {
-    BIO_printf(outbio, "Error setting serial number of the certificate\n");
-    exit -1;
+    	return "Error setting serial number of the certificate";
    }
 
   /* --------------------------------------------------------- *
    * Extract the subject name from the request                 *
    * ----------------------------------------------------------*/
   if (! (name = X509_REQ_get_subject_name(certreq)))
-    BIO_printf(outbio, "Error getting subject from cert request\n");
+	  return "Error getting subject from cert request";
 
   /* --------------------------------------------------------- *
    * Set the new certificate subject name                      *
    * ----------------------------------------------------------*/
   if (X509_set_subject_name(newcert, name) != 1) {
-    BIO_printf(outbio, "Error setting subject name of certificate\n");
-    exit -1;
+    	return "Error setting subject name of certificate";
    }
 
   /* --------------------------------------------------------- *
    * Extract the subject name from the signing CA cert         *
    * ----------------------------------------------------------*/
   if (! (name = X509_get_subject_name(cacert))) {
-    BIO_printf(outbio, "Error getting subject from CA certificate\n");
-    exit -1;
+    	return "Error getting subject from CA certificate";
    }
 
   /* --------------------------------------------------------- *
    * Set the new certificate issuer name                       *
    * ----------------------------------------------------------*/
   if (X509_set_issuer_name(newcert, name) != 1) {
-    BIO_printf(outbio, "Error setting issuer name of certificate\n");
-    exit -1;
+   	 return "Error setting issuer name of certificate";
    }
 
   /* --------------------------------------------------------- *
    * Extract the public key data from the request              *
    * ----------------------------------------------------------*/
   if (! (req_pubkey=X509_REQ_get_pubkey(certreq))) {
-    BIO_printf(outbio, "Error unpacking public key from request\n");
-    exit -1;
+   	return "Error unpacking public key from request";
    }
 
   /* --------------------------------------------------------- *
    * Optionally: Use the public key to verify the signature    *
    * ----------------------------------------------------------*/
   if (X509_REQ_verify(certreq, req_pubkey) != 1) {
-    BIO_printf(outbio, "Error verifying signature on request\n");
-    exit -1;
+    	return "Error verifying signature on request";
    }
 
   /* --------------------------------------------------------- *
    * Set the new certificate public key                        *
    * ----------------------------------------------------------*/
   if (X509_set_pubkey(newcert, req_pubkey) != 1) {
-    BIO_printf(outbio, "Error setting public key of certificate\n");
-    exit -1;
+    	return "Error setting public key of certificate";
+   }
+
+  /* ------------------------------------------------------------------- *
+   * Set the new certificate public key                        *
+   * ----------------------------------------------------------*/
+  if (X509_set_pubkey(newcert, req_pubkey) != 1) {
+    	return "Error setting public key of certificate";
    }
 
   /* ---------------------------------------------------------- *
    * Set X509V3 start date (now) and expiration date (+365 days)*
    * -----------------------------------------------------------*/
    if (! (X509_gmtime_adj(X509_get_notBefore(newcert),0))) {
-      BIO_printf(outbio, "Error setting start time\n");
-    exit -1;
+      	return "Error setting start time";
    }
 
    if(! (X509_gmtime_adj(X509_get_notAfter(newcert), valid_secs))) {
-      BIO_printf(outbio, "Error setting expiration time\n");
-    exit -1;
+      	return "Error setting expiration time";
+   }
+
+   /*------------------------------------------------ *
+   * Set X509V3 start date (now) and expiration date (+365 days)*
+   * -----------------------------------------------------------*/
+   if (! (X509_gmtime_adj(X509_get_notBefore(newcert),0))) {
+      	return "Error setting start time";
+   }
+
+   if(! (X509_gmtime_adj(X509_get_notAfter(newcert), valid_secs))) {
+      	return "Error setting expiration time";
    }
 
   /* ----------------------------------------------------------- *
    * Add X509V3 extensions                                       *
    * ------------------------------------------------------------*/
   X509V3_set_ctx(&ctx, cacert, newcert, NULL, NULL, 0);
-  X509_EXTENSION *ext;
 
   /* ----------------------------------------------------------- *
    * Set digest type, sign new certificate with CA's private key *
@@ -227,16 +172,14 @@ int mkcert() {
   digest = EVP_sha256();
 
   if (! X509_sign(newcert, ca_privkey, digest)) {
-    BIO_printf(outbio, "Error signing the new certificate\n");
-    exit -1;
-   }
+    	return "Error signing the new certificate";
+  }
 
   /* ------------------------------------------------------------ *
-   *  print the certificate                                       *
+   *  store the certificates                                      *
    * -------------------------------------------------------------*/
-  if (! PEM_write_bio_X509(outbio, newcert)) {
-    BIO_printf(outbio, "Error printing the signed certificate\n");
-    exit -1;
+  if (! PEM_write_bio_X509(cert_bio, newcert)) {
+   	return "Error storing the signed certificate";
    }
 
   /* ---------------------------------------------------------- *
@@ -245,9 +188,6 @@ int mkcert() {
 
   EVP_PKEY_free(req_pubkey);
   EVP_PKEY_free(ca_privkey);
-  X509_REQ_free(certreq);
   X509_free(newcert);
-  BIO_free_all(reqbio);
-  BIO_free_all(outbio);
-  exit(0);
+  return "Success";
 }

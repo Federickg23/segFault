@@ -7,19 +7,18 @@
 #include <string>
 #include <unistd.h>
 #include <vector>
+#include <fstream>
+#include <crypt.h>
 #include <iostream>
-#include <algorithm>
-#include <cstring>
-#include <sys/wait.h>
+
+#include "mkcert.c"
+#include "mail-utils.cpp"
+
+#include <openssl/x509.h>
+#include <openssl/pem.h>
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
-#include "list.h"
-#include "encrypt.h"
-#include "extract.h"
-#include "remove.h"
-#include "cstore_utils.h"
-#include "mail_utils.h"
 
 namespace my {
 
@@ -82,7 +81,7 @@ public:
 
 std::string receive_some_data(BIO *bio)
 {
-    char buffer[1024];
+    char buffer[100000];
     int len = BIO_read(bio, buffer, sizeof(buffer));
     if (len < 0) {
         my::print_errors_and_throw("error in BIO_read");
@@ -131,15 +130,463 @@ std::string receive_http_message(BIO *bio)
     return headers + "\r\n" + body;
 }
 
-void send_http_response(BIO *bio, const std::string& body)
+std::string get_method(const std::string& message)
 {
-    std::string response = "HTTP/1.1 200 OK\r\n";
-    response += "Content-Length: " + std::to_string(body.size()) + "\r\n";
-    response += "\r\n";
+	// Method is stored after content-length line, via 'Method:'
+	const char* method_line = strcasestr(&message[0], "Method: "); 
+	if (method_line == nullptr) {
+		return "";
+	}
+	// Only methods are: getcert, changepw, sendmsg, recvmsg
+	// Note, 3 of them are length 7, and changepw is length 8
+	
+	std::string method = std::string(method_line).substr(8, 8); 
+	return method;
+}
 
-    BIO_write(bio, response.data(), response.size());
+std::string get_content(const std::string& content, const std::string& message)
+{
+
+	const char* break_line = strcasestr(&message[0], "\r\n\r\n");
+        const char* body = break_line + 4;
+	const char* content_line = strcasestr(body, content.c_str());
+
+	if (content_line == nullptr) {
+		return "";
+	}
+
+	std::string c_s = std::string(content_line);
+	int l = content.length();	
+	std::string content_value = c_s.substr(l, c_s.find("\r\n")-l);
+	return content_value;
+
+}
+
+std::string login(std::string username, std::string password)
+{
+	// Check if username exists
+	std::fstream file;
+	std::string filename = "hashed_passwords/" + username + ".txt";
+   	
+	file.open(filename, std::ios::in);  
+   	if(!file.is_open()) //checking whether the file is open
+   	{
+		return "Username not found";
+      	}
+	
+	std::string hashed_password;
+      	getline(file, hashed_password);  // Should only be one line
+        file.close();
+                           
+	char* c = crypt(password.c_str(), hashed_password.c_str());
+	
+	if (strcmp(c, hashed_password.c_str()) != 0) 
+	{
+		return "Incorrect Password";
+	}
+
+	return "Login Success";
+}
+
+SSL *get_ssl(BIO *bio)
+{
+    SSL *ssl = nullptr;
+    BIO_get_ssl(bio, &ssl);
+    if (ssl == nullptr) {
+        my::print_errors_and_exit("Error in BIO_get_ssl");
+    }
+    return ssl;
+}
+
+void write_new_pass(std::string username, char* newpass)
+{
+	std::fstream file;
+	std::string filename = "hashed_passwords/" + username + ".txt";
+   	
+	file.open(filename, std::ios::out); 
+        file << newpass << "\n";	
+        file.close();
+}
+void generate_bad_request_error(std::string message, std::string& body, std::string& header)
+{
+	body += message + "\r\n\r\n";
+	header += "HTTP/1.1 400 Bad Request\r\n";
+	header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+}
+
+void generate_internal_error(std::string message, std::string& body, std::string& header)
+{
+	body += message + "\r\n\r\n";
+	header += "HTTP/1.1 500 Internal Server Error\r\n";
+	header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+}
+
+int verify_the_certificate(SSL *ssl, std::string& user)
+{
+    int err = SSL_get_verify_result(ssl);
+    if (err != X509_V_OK) {
+        const char *message = X509_verify_cert_error_string(err);
+        fprintf(stderr, "Certificate verification error: %s (%d)\n", message, err);
+        return 1;
+    }
+    X509 *cert = SSL_get_peer_certificate(ssl);
+    if (cert == nullptr) {
+        fprintf(stderr, "No certificate was presented by the client\n");
+        return 1;
+    }
+
+    return 0;
+}
+
+void send_certificate_error_response(BIO *bio)
+{
+	std::string body = "Could not verify certificate\r\n\r\n";
+	std::string header = "HTTP/1.1 401 Unauthorized\r\n";
+	header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+	
+	BIO_write(bio, header.data(), header.size());
+	BIO_write(bio, body.data(), body.size());
+	BIO_flush(bio);
+
+}
+
+void get_enc_msg(std::string response, std::vector<std::string>& recipients, std::vector<std::string>& buffer)
+{
+	const char* break_line = strcasestr(&response[0], "\r\n\r\n");
+	std::string body = break_line + 4;
+
+	size_t pos = 0;
+	// First find is of the recipients
+	while ((pos = body.find(": ")) != std::string::npos) {
+		
+		std::string recipient = body.substr(0, pos);
+    		body.erase(0, pos + 2); // Removes the recipient part
+		
+		// Now we find the end of the msg.
+		pos = body.find("\r\n");
+
+		std::string enc = body.substr(0, pos);
+		body.erase(0, pos + 2);
+
+		buffer.push_back(enc);
+		recipients.push_back(recipient);
+		
+	}
+
+}
+
+void send_http_response(BIO *bio, const std::string& message, std::string method)
+{
+    std::string body = "";
+    std::string header = "";
+
+    if (method == "") {generate_bad_request_error("Method option not found", body, header);}
+
+    else if (method.substr(0,7) == "getcert"){
+	    
+	    std::string user = get_content("Username: ", message);
+	    if (user == "") {generate_bad_request_error("Username in body not found", body, header); goto write;}
+	    std::string pass = get_content("Password: ", message);
+	    if (pass == "") {generate_bad_request_error("Password in body not found", body, header); goto write;}
+	    std::string csr = get_content("CSR: ", message);
+	    if (csr == "") {generate_bad_request_error("CSR in body not found", body, header); goto write;}
+	    
+	    std::string login_result = login(user, pass);	
+	    if(login_result != "Login Success")
+	    {
+	    
+		    body += login_result + "\r\n\r\n";
+		    header += "HTTP/1.1 401 Unauthorized\r\n";
+		    header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+	    }
+	    
+	    else // Successful login, so generate a certificate
+	    {
+
+		// Get the req from csr string
+		BIO* req_bio = BIO_new(BIO_s_mem());
+		X509_REQ* req;
+
+		BIO_puts(req_bio, csr.c_str());
+		req = PEM_read_bio_X509_REQ(req_bio, NULL, NULL, NULL);
+
+		BIO* cert_bio = BIO_new(BIO_s_mem());
+		std::string result = mkcert(cert_bio, req);
+
+		if (result != "Success")
+		{
+			printf(result.c_str());
+			generate_internal_error("Error in generating certificate", body, header);
+			goto write;
+		}
+
+		BUF_MEM *bio_buf;
+    		BIO_get_mem_ptr(cert_bio, &bio_buf);
+		std::string cert  = std::string(bio_buf->data, bio_buf->length);
+
+		body += cert + "\r\n";
+		header += "HTTP/1.1 200 OK\r\n";
+    		header += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+    		header += "\r\n";
+
+		// Server also saves cert
+		std::ofstream cert_file;
+	    	std::string filename = "clientcerts/";
+	    	filename += user;
+	    	filename += ".cert.pem";
+	    	cert_file.open(filename.c_str());
+	    	cert_file << cert;
+	    	cert_file.close();
+	    }	
+    }
+    else if (method.substr(0,8) == "changepw")
+    {
+	    std::string user = get_content("Username: ", message);
+	    if (user == "") {generate_bad_request_error("Username in body not found", body, header); goto write;}
+	    std::string pass = get_content("Password: ", message);
+	    if (pass == "") {generate_bad_request_error("Password in body not found", body, header); goto write;}
+	    std::string newpass = get_content("New Password: ", message);
+	    if (newpass == "") {generate_bad_request_error("New Password in body not found", body, header); goto write;}
+	    
+	    std::string login_result = login(user, pass);	
+	    if(login_result != "Login Success")
+	    {
+		    body += login_result + "\r\n\r\n";
+		    header += "HTTP/1.1 401 Unauthorized\r\n";
+		    header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+	    }
+	    
+	    else // Successful login, so generate a new password
+	    {
+		unsigned long seed[2];
+  		char salt[] = "$6$........";
+  		const char *const seedchars =
+  			"./0123456789ABCDEFGHIJKLMNOPQRST"
+  			"UVWXYZabcdefghijklmnopqrstuvwxyz";
+  		char *password;
+  		int i;
+  		seed[0] = time(NULL);
+  		seed[1] = getpid() ^ (seed[0] >> 14 & 0x30000);
+
+  		for (i=0; i<8; i++)
+    			salt[3+i] = seedchars[(seed[i/5] >> (i%5)*6) & 0x3f];
+
+  		password = crypt(newpass.c_str(), salt);
+		write_new_pass(user, password);
+
+	    	body += "Password updated\r\n\r\n";
+	    	header += "HTTP/1.1 200 OK\r\n";
+	    	header += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+	    	header += "\r\n";
+	    }
+    }
+    else if (method.substr(0,7) == "sendmsg")
+    {
+	    std::string cert = get_content("Certificate: ", message);
+	    if (cert == "") {generate_bad_request_error("Certificate in body not found", body, header); goto write;}
+	    std::string recipients = get_content("Recipients: ", message);
+	    if (recipients == "") {generate_bad_request_error("Recipients in body not found", body, header); goto write;}
+
+            // Convert certificate string to X509, so we can extract the commonname
+	    BIO *cbio;
+	    X509 *certificate;
+	    
+	    cbio = BIO_new(BIO_s_mem());
+	    BIO_puts(cbio, cert.c_str());
+	    certificate = PEM_read_bio_X509(cbio, NULL, NULL, NULL);
+
+	    X509_NAME *subj = X509_get_subject_name(certificate);
+	    char cn[1024];
+
+            int name_len = X509_NAME_get_text_by_NID(subj, NID_commonName, cn, sizeof(cn));
+            if (name_len == -1) {
+
+		    	body += "Unable to locate certificate CN\r\n\r\n";
+		    	header += "HTTP/1.1 401 Unauthorized\r\n";
+		    	header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+			goto write;
+
+            } else if (name_len != (int)strlen(cn)) {
+
+			body += "Certificate CN= is malformed\r\n\r\n";
+		    	header += "HTTP/1.1 401 Unauthorized\r\n";
+		    	header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+			goto write;
+            }
+
+	    // Find the certificate file, if it exists
+	    std::fstream file;
+	    std::string filename = "clientcerts/" + std::string(cn) + ".cert.pem";
+   	
+	    file.open(filename, std::ios::in);  
+   	    if(!file.is_open()) //checking whether the file is open
+   	    {
+		body += "Certificate not found in database\r\n\r\n";
+		header += "HTTP/1.1 401 Unauthorized\r\n";
+		header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+		goto write;
+      	    }
+
+	    std::string line;
+	    std::string cert_to_verify;
+	     
+	    while(getline(file, line))
+	    	{cert_to_verify += line + "\n";}
+	    file.close();
+
+	    cert_to_verify = cert_to_verify.substr(0,cert_to_verify.size()-1);
+	    
+	    if (cert_to_verify != cert)
+	    {
+	    	body += "Certificate verification failed\r\n\r\n";
+		header += "HTTP/1.1 401 Unauthorized\r\n";
+		header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+		goto write;
+
+	    }
+
+	    size_t pos = 0;
+	    std::string r = recipients;
+	    std::string token;
+
+	    while ((pos = r.find(" ")) != std::string::npos) {
+
+		    token = r.substr(0, pos);
+    		    r.erase(0, pos + 1);
+		    // Get the certificate of each of the recipients
+		    
+		    // Find the certificate file, if it exists
+	    	    std::fstream file;
+	    	    std::string filename = "clientcerts/" + token + ".cert.pem";
+   		    body += token + ": ";
+
+	            file.open(filename, std::ios::in);  
+   	    	    if(!file.is_open()) //checking whether the file is open
+   	    	    {
+			body += "Certificate not found in database\r\n";
+			continue;
+      	    	    }
+	            std::string line;
+	            std::string cert_r;
+	     
+	    	    while(getline(file, line))
+	    		{cert_r += line + "\n";}
+	    	    file.close();
+		    body += cert_r + "\n"; // An extra new line for the certificates
+	    }
+	    body +="\r\n\r\n";
+	    header += "HTTP/1.1 200 OK\r\n";
+	    header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+    } 
+    
+    else if (method.substr(0,8) == "2sendmsg" )  // Second part of send msg
+    {
+	    // Upload the messages to the respective users.
+	    std::string m_copy = message;
+	    std::vector<std::string> recipients, encmsg;
+
+	    get_enc_msg(m_copy, recipients, encmsg);
+
+	    for(int i = 0; i < (int)encmsg.size(); i++)
+	    {
+		    std::string rec = recipients.operator[](i);
+		    std::string m = encmsg.operator[](i);
+		    send(rec, m); // From mail-utils.cpp
+	    }
+
+	    body += "Messages Uploaded\r\n\r\n";
+	    header += "HTTP/1.1 200 OK\r\n";
+	    header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+
+    }
+    
+    else if (method.substr(0,7) == "recvmsg")
+    {
+	    std::string cert = get_content("Certificate: ", message);
+	    if (cert == "") {generate_bad_request_error("Certificate in body not found", body, header); goto write;}
+
+            // Convert certificate string to X509, so we can extract the commonname
+	    BIO *cbio;
+	    X509 *certificate;
+	    
+	    cbio = BIO_new(BIO_s_mem());
+	    BIO_puts(cbio, cert.c_str());
+	    certificate = PEM_read_bio_X509(cbio, NULL, NULL, NULL);
+
+	    X509_NAME *subj = X509_get_subject_name(certificate);
+	    char cn[1024];
+
+            int name_len = X509_NAME_get_text_by_NID(subj, NID_commonName, cn, sizeof(cn));
+            if (name_len == -1) {
+
+		    	body += "Unable to locate certificate CN\r\n\r\n";
+		    	header += "HTTP/1.1 401 Unauthorized\r\n";
+		    	header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+			goto write;
+
+            } else if (name_len != (int)strlen(cn)) {
+
+			body += "Certificate CN= is malformed\r\n\r\n";
+		    	header += "HTTP/1.1 401 Unauthorized\r\n";
+		    	header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+			goto write;
+            }
+
+	    // Find the certificate file, if it exists
+	    std::fstream file;
+	    std::string filename = "clientcerts/" + std::string(cn) + ".cert.pem";
+   	
+	    file.open(filename, std::ios::in);  
+   	    if(!file.is_open()) //checking whether the file is open
+   	    {
+		body += "Certificate not found in database\r\n\r\n";
+		header += "HTTP/1.1 401 Unauthorized\r\n";
+		header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+		goto write;
+      	    }
+
+	    std::string line;
+	    std::string cert_to_verify;
+	     
+	    while(getline(file, line))
+	    	{cert_to_verify += line + "\n";}
+	    file.close();
+
+	    cert_to_verify = cert_to_verify.substr(0,cert_to_verify.size()-1);
+	    
+	    if (cert_to_verify != cert)
+	    {
+	    	body += "Certificate verification failed\r\n\r\n";
+		header += "HTTP/1.1 401 Unauthorized\r\n";
+		header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+		goto write;
+
+	    }
+
+	    // If successful login, then we get the next message and send it.
+	    
+	    std::string message;
+	    int status = recv(std::string(cn), message);
+	    if (status == 1)
+	    {
+		    body += "No pending messages\r\n\r\n";
+		    header += "HTTP/1.1 200 OK\r\n";
+		    header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+		    goto write;
+	    }
+
+	    body += "Encrypted Message: ";
+	    body += message;
+	    body += "\r\n\r\n";
+	    header += "HTTP/1.1 200 OK\r\n";
+	    header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+    }
+
+write:
+    BIO_write(bio, header.data(), header.size());
     BIO_write(bio, body.data(), body.size());
     BIO_flush(bio);
+  
 }
 
 my::UniquePtr<BIO> accept_new_tcp_connection(BIO *accept_bio)
@@ -152,225 +599,6 @@ my::UniquePtr<BIO> accept_new_tcp_connection(BIO *accept_bio)
 
 } // namespace my
 
-
-void receiveMessage(std::string request){
-
-}
-
-
-int parseRequest(std::string request){
-    if(strcmp(request.substr(0,3).c_str(), "GET") != 0){
-        return -1;
-    }
-    std::vector<FullMessage> fullMessages;
-
-
-    std::string delimiter = "\n";
-    size_t pos = 0;
-    std::string token;
-    int counter = 0;
-    bool mailFromMode = true;
-    bool rcptToMode = false;
-    bool dataMode = false;
-    bool skipMode = false;
-    std::string mailFromUsername;
-    std::vector<std::string> rcptToUsernames;
-    std::vector<std::string> messageLines;
-    int bytesRead = 0;
-
-    while ((pos = request.find(delimiter)) != std::string::npos) {
-        token = request.substr(0, pos);
-        std::cout << token << std::endl;
-        if(counter == 2 && token.find("send") != std::string::npos ){
-            std::cout << "Client is sending a message" << std::endl;
-        }
-        else if (counter == 2 && token.find("receive") != std::string::npos){
-            std::cout << "Client is receiving a message" << std::endl;
-            receiveMessage(request);
-            break;
-        }
-        else if (counter == 2){
-            return -1;
-        }
-        if (token.empty())
-            {
-                bytesRead += 1;
-                if (bytesRead > MAX_MSG_SIZE)
-                {
-                    std::cerr << "Maximum message size exceeded. Aborting mail-in parsing.\n";
-                    return 1;
-                }
-            }
-            else
-            {
-                bytesRead += token.size();
-                if (bytesRead > MAX_MSG_SIZE)
-                {
-                    std::cerr << "Maximum message size exceeded. Aborting mail-in parsing.\n";
-                    return 1;
-                }
-            }
-            // SKIP MODE -- get to end of line '.'
-            if (skipMode)
-            {
-                if (token.empty())
-                {
-                    continue;
-                }
-                if (token == ".")
-                {
-                    // Flush out the variables, ready for new message
-                    mailFromUsername.clear();
-                    rcptToUsernames.clear();
-                    messageLines.clear();
-
-                    skipMode = false;
-                    mailFromMode = true;
-                    rcptToMode = false;
-                    dataMode = false;
-                }
-            }
-            // MODE 1: MAIL FROM:<username>
-            else if(mailFromMode && !rcptToMode && !dataMode && !skipMode)
-            {
-                // Reject newlines out of place
-                if (token.empty())
-                {
-                    std::cerr << "Empty line found in control lines. Skipping to end-of-message.\n";
-                    skipMode = true;
-                    continue; 
-                }
-
-                // Check correct MAIL FROM format
-                if (!checkMailFrom(token))
-                {
-                    std::cerr << "MAIL FROM control line invalid formatting. Skipping to end-of-message.\n";
-                    skipMode = true;
-                    continue;
-                }
-
-                // Extract username from brackets
-                std::string testUsername = extractUsername(token); 
-                if ( !validMailboxChars(testUsername) )
-                {
-                    std::cerr << "Invalid MAIL FROM username. Skipping to end-of-message.\n";
-                    skipMode = true;
-                    continue;
-                }
-
-                if( !doesMailboxExist(testUsername) )
-                {
-                    std::cerr << "Invalid MAIL FROM username. Skipping to end-of-message.\n";
-                    skipMode = true;
-                    continue;
-                }
-                else
-                {
-                    mailFromUsername = testUsername;
-                }
-
-                // Change modes
-                mailFromMode = false;
-                rcptToMode = true;
-                dataMode = false;
-            }
-            // MODE 2: RCPT TO:<username>
-            else if(rcptToMode && !mailFromMode && !dataMode && !skipMode)
-            {
-                // Reject newlines out of place
-                if (token.empty())
-                {
-                    std::cerr << "Empty line found in control lines. Skipping to end-of-message.\n";
-                    skipMode = true;
-                    continue;
-                }
-
-                // Check if this line is the DATA delimiter (if so, continue)
-                if(checkDataDelimiter(token))
-                {
-                    // Invalid if there are no valid rcptTo usernames (valid if at least one)
-                    if ( rcptToUsernames.empty() )
-                    {
-                        std::cerr << "No valid RCPT TO lines. Skipping to end-of-message.\n";
-                        skipMode = true;
-                        continue;
-                    }
-
-                    // Switch mode
-                    mailFromMode = false;
-                    rcptToMode = false;
-                    dataMode = true;
-                    continue;
-                }
-
-                // Check correct RCPT TO format
-                if (!checkRcptTo(token))
-                {
-                    std::cerr << "RCPT TO control line invalid formatting. Skipping to end-of-message.\n";
-                    skipMode = true;
-                    continue;
-                }
-
-                // Extract username from brackets
-                std::string testUsername = extractUsername(token);
-                if( !validMailboxChars(testUsername) )
-                {
-                    std::cerr << "Invalid RCPT TO username. Violates formatting." << std::endl;
-                }
-                else
-                {
-                    rcptToUsernames.push_back(testUsername);
-                }
-            }
-            // MODE 3: DATA
-            else if(dataMode && !mailFromMode && !rcptToMode && !skipMode)
-            {
-                // Empty lines just get added as newlines
-                if (token.empty())
-                {
-                    messageLines.push_back("\n");
-                    continue;
-                }
-
-                // End of message check
-                if (token == ".")
-                {
-                    FullMessage newMessage;
-                    newMessage.mailFrom = mailFromUsername;
-                    std::sort( rcptToUsernames.begin(), rcptToUsernames.end() );
-                    rcptToUsernames.erase( std::unique( rcptToUsernames.begin(), rcptToUsernames.end() ), rcptToUsernames.end() );
-                    newMessage.rcptTo = rcptToUsernames;
-                    newMessage.data = messageLines;
-                    fullMessages.push_back(newMessage);
-
-                    // Flush out the variables, ready for new message
-                    mailFromUsername.clear();
-                    rcptToUsernames.clear();
-                    messageLines.clear();
-
-                    // Switch back to mailFrom mode
-                    mailFromMode = true;
-                    rcptToMode = false;
-                    dataMode = false;
-                }
-                // Actual content
-                else
-                {
-                    if (token[0] == '.')
-                    {
-                        token = token.substr(1);
-                    }
-                    
-                    messageLines.push_back(token);
-                }
-            }
-
-        request.erase(0, pos + delimiter.length());
-
-    }
-    return 0;
-}
-
 int main()
 {
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
@@ -382,19 +610,23 @@ int main()
     SSL_CTX_set_min_proto_version(ctx.get(), TLS1_2_VERSION);
 #endif
 
-    if (SSL_CTX_use_certificate_file(ctx.get(), "serv_cert.pem", SSL_FILETYPE_PEM) <= 0) {
+    if (SSL_CTX_use_certificate_file(ctx.get(), "certs/localhost.cert.pem", SSL_FILETYPE_PEM) <= 0) {
         my::print_errors_and_exit("Error loading server certificate");
     }
-    if (SSL_CTX_use_PrivateKey_file(ctx.get(), "private/priv_key.pem", SSL_FILETYPE_PEM) <= 0) {
+    
+    if (SSL_CTX_use_PrivateKey_file(ctx.get(), "key/localhost.key.pem", SSL_FILETYPE_PEM) <= 0) {
         my::print_errors_and_exit("Error loading server private key");
     }
-    if (!SSL_CTX_load_verify_locations(ctx.get(),"../certs/ca/certs/ca.cert.pem",NULL)) {
+
+    if (!SSL_CTX_load_verify_locations(ctx.get(),"../certificates/root/ca/intermediate/certs/ca-chain.cert.pem",NULL)) {
                 	ERR_print_errors_fp(stderr);
                 	exit(1);
     }
+    
+    
     SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER, NULL); //Set to require client certificate verification 
     SSL_CTX_set_verify_depth(ctx.get(),1);  
-
+    
     auto accept_bio = my::UniquePtr<BIO>(BIO_new_accept("8080"));
     if (BIO_do_accept(accept_bio.get()) <= 0) {
         my::print_errors_and_exit("Error in BIO_do_accept (binding to port 8080)");
@@ -410,12 +642,17 @@ int main()
             | my::UniquePtr<BIO>(BIO_new_ssl(ctx.get(), 0))
             ;
         try {
+	    
+	    if (BIO_do_handshake(bio.get()) <= 0)
+	    {
+		    printf("Error in bio handshake");
+		    continue;
+	    }
             std::string request = my::receive_http_message(bio.get());
             printf("Got request:\n");
             printf("%s\n", request.c_str());
-            parseRequest(request.c_str()); 
-
-            my::send_http_response(bio.get(), "okay cool\n");
+	    std::string method = my::get_method(request); 
+	    my::send_http_response(bio.get(), request, method);
         } catch (const std::exception& ex) {
             printf("Worker exited with exception:\n%s\n", ex.what());
         }

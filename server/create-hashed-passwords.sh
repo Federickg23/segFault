@@ -1,7 +1,7 @@
 #!/bin/bash
-input="../tests/logins.txt"
-rm -rf private/hashed_passwords
-mkdir private/hashed_passwords
+input="../logins.txt"
+rm -rf hashed_passwords
+mkdir hashed_passwords
 
 while IFS= read -r line
 do
@@ -22,6 +22,6 @@ do
 		fi	
 	done
 
-	echo $crypto > private/hashed_passwords/$filename.txt 
+	echo $crypto > hashed_passwords/$filename.txt 
 
 done < "$input"
