@@ -15,6 +15,7 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
+#include <openssl/cms.h>
 
 namespace my {
 
@@ -77,7 +78,7 @@ public:
 
 std::string receive_some_data(BIO *bio)
 {
-    char buffer[1024];
+    char buffer[50000];
     int len = BIO_read(bio, buffer, sizeof(buffer));
     if (len < 0) {
         my::print_errors_and_throw("error in BIO_read");
@@ -126,12 +127,13 @@ std::string receive_http_message(BIO *bio)
     return headers + "\r\n" + body;
 }
 
-void send_http_request(BIO *bio, const std::string& line, std::string& message, const std::string& host)
+void send_http_request(BIO *bio, const std::string& line, std::string& message, const std::string& host, const std::string&  method)
 {
     std::string request = line + "\r\n";
     request += "Host: " + host + "\r\n";
     request += "Content-Length: " + std::to_string(message.size()) + "\r\n";
-    request += "Method: sendmsg\r\n\r\n";
+    request += method;
+    request += "\r\n\r\n";
     request += message;
 
     BIO_write(bio, request.data(), request.size());
@@ -197,17 +199,85 @@ void verify_the_certificate(SSL *ssl, const std::string& expected_hostname)
 #endif
 }
 
+int get_cert_strings(std::string response, std::vector<std::string>& recipients, std::vector<std::string>& buffer)
+{
+	const char* break_line = strcasestr(&response[0], "\r\n\r\n");
+	std::string body = break_line + 4;
+
+	size_t pos = 0;
+	// First find is of the recipients
+	while ((pos = body.find(": ")) != std::string::npos) {
+		
+		std::string recipient = body.substr(0, pos);
+    		body.erase(0, pos + 2); // Removes the recipient part
+		
+		// Now we find the end of the cert. We made it end with 2 new lines
+		pos = body.find("\n\n");
+
+		if (pos == std::string::npos)
+		{
+			// That means certificate was not found. So, we don't add this recipient nore certs.
+			// As such, we delete this line too
+			pos = body.find("\r\n");
+			body.erase(0, pos + 2);
+			continue;
+		}
+
+		std::string cert = body.substr(0, pos);
+		// Add the certificate and the recipient, then delete it
+		body.erase(0, pos + 2);
+
+		buffer.push_back(cert);
+		recipients.push_back(recipient);
+		
+	}
+
+	// If at the end, the size of the buffer is 0, then no recipients found
+	
+	if(buffer.size() == 0)
+		return 1;
+	else 
+		return 0;
+
+}
+
+
 } // namespace my
 
 int main(int argc, char* argv[])
 {
 
-	if (argc != 3)
+	if (argc < 5)
 	{
-		std::string message = "Usage: ./sendmsg [path/to/certificate] [path/to/message]";
+		std::string message = "Usage: ./sendmsg [path/to/certificate] [path/to/message] -r [recipient1] [recipient2] ...";
+		std::cerr << message << std::endl;
+		exit(1);
+	} 
+	
+	else if (argv[3] != std::string("-r"))
+	{
+		std::string message = "Usage: ./sendmsg [path/to/certificate] [path/to/message] -r [recipient1] [recipient2] ...";
 		std::cerr << message << std::endl;
 		exit(1);
 	}
+
+	// Before trying to connect, lets pull the message. Maybe theres an error when we pull it.
+	
+	std::fstream file;
+	file.open(argv[2], std::ios::in);  
+   	if(!file.is_open()) //checking whether the file is open
+   	{
+		std::cerr << "Message not found" << std::endl;
+		exit(1);
+	 
+	}
+	std::string line;
+	std::string msg;
+	while(getline(file, line))
+		{msg += line + "\n";}
+	file.close();
+	msg = msg.substr(0,msg.size()-1);
+
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     SSL_library_init();
     SSL_load_error_strings();
@@ -253,12 +323,107 @@ int main(int argc, char* argv[])
     }
     
     my::verify_the_certificate(my::get_ssl(ssl_bio.get()), "localhost");
-   
+    
+    // First request gets the user's certificates
     std::string message = "Certificate: ";
     message += my::get_cert(argv[1]);
-    message += "\r\n\r\n";
-
-    my::send_http_request(ssl_bio.get(), "GET / HTTP/1.1", message, "localhost");
+    message += "\r\n";
+    message += "Recipients: ";
+    int i;
+    for (i = 4; i < argc; i++)
+    {
+	    message += argv[i];
+	    message += " "; // Last space is important! Server looks for it.
+    } 
+    message += "\r\n\r\n"; 
+    my::send_http_request(ssl_bio.get(), "GET / HTTP/1.1", message, "localhost", "Method: sendmsg");
     std::string response = my::receive_http_message(ssl_bio.get());
     printf("%s", response.c_str());
+   
+    
+    // Now, for each certificate, get the public key
+    
+    std::vector<std::string> recipients, cert_strings;
+
+    if (my::get_cert_strings(response, recipients, cert_strings) == 1)
+    {
+	    std::cerr << "No certificates were found from the recipients" << std::endl;
+	    exit(1);
+    }
+
+    for (int i = 0; i < (int)cert_strings.size(); i++)
+    {
+	    std::string rec = recipients.operator[](i);
+	    std::string cert = cert_strings.operator[](i);
+	    
+	    BIO *cbio;
+	    
+	    cbio = BIO_new(BIO_s_mem());
+	    BIO_puts(cbio, cert.c_str());
+	   
+	    X509 *certificate = PEM_read_bio_X509(cbio, NULL, 0, NULL);
+
+	    STACK_OF(X509) *certs = sk_X509_new_null();
+	    sk_X509_push(certs, certificate);
+
+	    certificate = NULL;
+
+	    BIO *in = BIO_new_file(argv[2], "r");
+	    CMS_ContentInfo *cms = CMS_encrypt(certs, in, EVP_des_ede3_cbc(), CMS_STREAM);
+
+	    /**BIO *out = BIO_new(BIO_s_mem());
+	    SMIME_write_CMS(out, cms, in, CMS_STREAM);**/
+
+	    BIO *o2 = BIO_new_file("a.txt", "w");
+	    SMIME_write_CMS(o2, cms, in, CMS_STREAM);
+
+	    
+   	    //BUF_MEM *bio_buf;
+	    //BIO_get_mem_ptr(out, &bio_buf);
+	    //std::string encrypted = std::string(bio_buf->data, bio_buf->length);
+	
+
+	    if (rec == "muermo")
+	    {
+		   std::fstream file;
+		   file.open("private_keys/muermo.key.pem", std::ios::in);  
+   		   if(!file.is_open()) //checking whether the file is open
+   	{
+		std::cerr << "Message not found" << std::endl;
+		exit(1);
+	 
+	}
+	std::string line;
+	std::string key;
+	while(getline(file, line))
+		{key += line + "\n";}
+	file.close();
+	//key = key.substr(0,msg.size()-1);
+
+		    BIO *d = BIO_new(BIO_s_mem());
+		    BIO_puts(d, key.c_str());
+
+		    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(d, NULL, NULL, NULL);
+
+		    BIO *a = BIO_new_file("a.txt", "r");
+		    //BIO_puts(a, encrypted.c_str());
+
+		    CMS_ContentInfo *cms2 = SMIME_read_CMS(a, NULL);
+
+
+		    if(!cms2)
+		    {
+			    std::cerr << "HI" << std::endl;
+		    }
+		    BIO *b = BIO_new(BIO_s_mem());
+		    int i = CMS_decrypt(cms2, pkey, certificate, NULL, b, CMS_STREAM);
+		    char buf[100000];
+		    ERR_error_string(ERR_get_error(), buf);
+		    std::cerr << buf << std::endl;
+		    
+	    }
+    }
+
+
+    // Second message sends an encrypted message
 }

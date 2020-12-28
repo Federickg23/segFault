@@ -80,7 +80,7 @@ public:
 
 std::string receive_some_data(BIO *bio)
 {
-    char buffer[10000];
+    char buffer[100000];
     int len = BIO_read(bio, buffer, sizeof(buffer));
     if (len < 0) {
         my::print_errors_and_throw("error in BIO_read");
@@ -356,7 +356,9 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
     {
 	    std::string cert = get_content("Certificate: ", message);
 	    if (cert == "") {generate_bad_request_error("Certificate in body not found", body, header); goto write;}
-	    
+	    std::string recipients = get_content("Recipients: ", message);
+	    if (recipients == "") {generate_bad_request_error("Recipients in body not found", body, header); goto write;}
+
             // Convert certificate string to X509, so we can extract the commonname
 	    BIO *cbio;
 	    X509 *certificate;
@@ -391,7 +393,7 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
 	    file.open(filename, std::ios::in);  
    	    if(!file.is_open()) //checking whether the file is open
    	    {
-		body += "Certificate not found in database - user does not exist\r\n\r\n";
+		body += "Certificate not found in database\r\n\r\n";
 		header += "HTTP/1.1 401 Unauthorized\r\n";
 		header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
 		goto write;
@@ -415,8 +417,35 @@ void send_http_response(BIO *bio, const std::string& message, std::string method
 
 	    }
 
-	    /* TODO: Now that cert is valid, proceed with sending the message */
-	    body += cn;
+	    size_t pos = 0;
+	    std::string r = recipients;
+	    std::string token;
+
+	    while ((pos = r.find(" ")) != std::string::npos) {
+
+		    token = r.substr(0, pos);
+    		    r.erase(0, pos + 1);
+		    // Get the certificate of each of the recipients
+		    
+		    // Find the certificate file, if it exists
+	    	    std::fstream file;
+	    	    std::string filename = "clientcerts/" + token + ".cert.pem";
+   		    body += token + ": ";
+
+	            file.open(filename, std::ios::in);  
+   	    	    if(!file.is_open()) //checking whether the file is open
+   	    	    {
+			body += "Certificate not found in database\r\n";
+			continue;
+      	    	    }
+	            std::string line;
+	            std::string cert_r;
+	     
+	    	    while(getline(file, line))
+	    		{cert_r += line + "\n";}
+	    	    file.close();
+		    body += cert_r + "\n"; // An extra new line for the certificates
+	    }
 	    body +="\r\n\r\n";
 	    header += "HTTP/1.1 200 OK\r\n";
 	    header += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
@@ -491,8 +520,7 @@ int main()
             std::string request = my::receive_http_message(bio.get());
             printf("Got request:\n");
             printf("%s\n", request.c_str());
-	    std::string method = my::get_method(request);
-    	    
+	    std::string method = my::get_method(request); 
 	    my::send_http_response(bio.get(), request, method);
         } catch (const std::exception& ex) {
             printf("Worker exited with exception:\n%s\n", ex.what());
